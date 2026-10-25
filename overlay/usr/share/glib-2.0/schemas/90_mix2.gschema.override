@@ -1,0 +1,14 @@
+# Mi MIX 2: dock the on-screen keyboard at the bottom and show it for text input
+[org.onboard]
+layout='/usr/share/onboard/layouts/Compact.onboard'
+
+[org.onboard.auto-show]
+enabled=true
+
+[org.onboard.window]
+docking-enabled=true
+docking-edge='bottom'
+
+[org.onboard.window.portrait]
+dock-expand=true
+dock-height=560

@@ -1,0 +1,30 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] wifi: ath10k: snoc: limit DMA to 32 bits on MSM8998
+
+On MSM8998 (Xiaomi Mi MIX 2, WLAN.HL.1.0 firmware) WMI works but no
+frame is ever received: scans hop channels without finding any BSS and
+the modem watchdog then fires (DOG_HB starvation) while the WLAN process
+waits on its RX path. The stock kernel confines all WLAN DMA to a
+32-bit IOVA window (0xa0000000-0xb0000000), whereas with the 35-bit mask
+the IOMMU hands out addresses like 0x7fe106140 that this generation of
+the WLAN DMA cannot reach. Use a 32-bit mask on MSM8998.
+---
+ drivers/net/wireless/ath/ath10k/snoc.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/wireless/ath/ath10k/snoc.c
++++ b/drivers/net/wireless/ath/ath10k/snoc.c
+@@ -1727,7 +1727,12 @@ static int ath10k_snoc_probe(struct platform_device *pdev)
+ 		return -EINVAL;
+ 	}
+ 
+-	ret = dma_set_mask_and_coherent(dev, drv_data->dma_mask);
++	/* The MSM8998 WLAN DMA only reaches 32-bit IOVAs */
++	if (of_machine_is_compatible("qcom,msm8998"))
++		ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
++	else
++		ret = dma_set_mask_and_coherent(dev, drv_data->dma_mask);
++
+ 	if (ret) {
+ 		dev_err(dev, "failed to set dma mask: %d\n", ret);
+ 		return ret;

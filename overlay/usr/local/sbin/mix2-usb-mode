@@ -1,0 +1,57 @@
+#!/bin/sh
+# Switch the USB-C port between device mode (USB networking to a computer)
+# and host mode (hubs, keyboards, mice, flash drives).
+# usage: mix2-usb-mode host|device|toggle|status
+#
+# In host mode the phone feeds 5 V to the port, unless something is already
+# powering it (a hub with its own charger): then the phone does not fight it.
+
+ROLE=$(ls -d /sys/class/usb_role/*-role-switch 2>/dev/null | head -1)/role
+VOUT=$(ls -d /sys/bus/platform/drivers/reg-userspace-consumer/*/ 2>/dev/null | head -1)
+CHG=/sys/class/power_supply/pmi8998-charger/online
+
+[ -w "$ROLE" ] || { echo "USB role switch not available" >&2; exit 1; }
+
+vbus() { [ -n "$VOUT" ] && echo "$1" > "$VOUT/state"; }
+external_power() {
+	# Our own 5 V output also shows up as "online", so only trust it while off
+	[ "$(cat "$VOUT/state" 2>/dev/null)" != enabled ] && [ "$(cat "$CHG" 2>/dev/null)" = 1 ]
+}
+notify() {
+	echo "$1"
+	# Tell the desktop user too when run from the panel button
+	u=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 != "root" && $3 != "lightdm" {print $3; exit}')
+	[ -n "$u" ] && runuser -u "$u" -- env DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$u")/bus" \
+		notify-send -i drive-removable-media "USB" "$1" 2>/dev/null || true
+}
+
+mode=$1
+[ "$mode" = toggle ] && { [ "$(cat "$ROLE")" = host ] && mode=device || mode=host; }
+
+case "$mode" in
+	host)
+		if external_power; then
+			echo host > "$ROLE"
+			notify "USB 主机模式（由外部电源供电）：可以接 Hub、键盘、鼠标"
+		else
+			vbus enabled
+			echo host > "$ROLE"
+			notify "USB 主机模式（手机供电 5V）：可以接 Hub、键盘、鼠标"
+		fi
+		;;
+	device)
+		echo device > "$ROLE"
+		vbus disabled
+		/usr/local/sbin/mix2-usb-gadget >/dev/null 2>&1 || true
+		notify "USB 设备模式：可以连接电脑（172.16.42.1）"
+		;;
+	status)
+		echo "role: $(cat "$ROLE")"
+		echo "5V output: $(cat "$VOUT/state" 2>/dev/null || echo unknown)"
+		echo "external power: $(cat "$CHG" 2>/dev/null)"
+		;;
+	*)
+		echo "usage: $0 host|device|toggle|status" >&2
+		exit 1
+		;;
+esac

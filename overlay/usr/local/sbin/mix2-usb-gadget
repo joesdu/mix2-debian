@@ -1,0 +1,26 @@
+#!/bin/sh
+# Expose a USB NCM network interface (usb0) to the connected computer.
+# The phone is 172.16.42.1; mix2-usb-dhcp.service hands 172.16.42.2 to the computer.
+# NetworkManager leaves USB gadget interfaces unmanaged, so configure usb0 here.
+# Safe to re-run: after the port comes back from host mode it re-binds the gadget.
+set -e
+G=/sys/kernel/config/usb_gadget/mix2
+mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config
+if [ ! -d $G ]; then
+	mkdir -p $G/strings/0x409 $G/functions/ncm.usb0 $G/configs/c.1/strings/0x409
+	echo 0x1d6b > $G/idVendor
+	echo 0x0104 > $G/idProduct
+	echo "Xiaomi" > $G/strings/0x409/manufacturer
+	echo "Mi MIX 2 Debian" > $G/strings/0x409/product
+	cut -c1-16 /etc/machine-id > $G/strings/0x409/serialnumber
+	echo "NCM" > $G/configs/c.1/strings/0x409/configuration
+	ln -s $G/functions/ncm.usb0 $G/configs/c.1/
+fi
+if [ -z "$(cat $G/UDC)" ]; then
+	for i in $(seq 1 50); do [ -n "$(ls /sys/class/udc 2>/dev/null)" ] && break; sleep 0.2; done
+	ls /sys/class/udc | head -1 > $G/UDC
+fi
+IF=$(cat $G/functions/ncm.usb0/ifname)
+for i in $(seq 1 50); do [ -e /sys/class/net/$IF ] && break; sleep 0.1; done
+ip addr replace 172.16.42.1/24 dev "$IF"
+ip link set "$IF" up

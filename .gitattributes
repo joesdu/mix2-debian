@@ -1,0 +1,5 @@
+# Everything here runs on Linux (WSL / the phone): keep LF even on Windows checkouts
+* text=auto eol=lf
+
+*.deb binary
+tools/mix2-reboot binary

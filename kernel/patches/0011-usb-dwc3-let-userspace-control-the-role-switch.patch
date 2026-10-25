@@ -1,0 +1,21 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] usb: dwc3: let userspace control the role switch
+
+The Mi MIX 2 has no Type-C port controller driver that could drive the
+dwc3 role switch, so expose the "role" attribute and let userspace
+(mix2-usb-mode) switch between device mode (USB networking to a computer)
+and host mode (hubs, keyboards, mice).
+---
+ drivers/usb/dwc3/drd.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+--- a/drivers/usb/dwc3/drd.c
++++ b/drivers/usb/dwc3/drd.c
+@@ -512,6 +512,7 @@ static int dwc3_setup_role_switch(struct dwc3 *dwc)
+ 	dwc3_set_mode(dwc, mode);
+ 
+ 	dwc3_role_switch.fwnode = dev_fwnode(dwc->dev);
++	dwc3_role_switch.allow_userspace_control = true;
+ 	dwc3_role_switch.set = dwc3_usb_role_switch_set;
+ 	dwc3_role_switch.get = dwc3_usb_role_switch_get;
+ 	dwc3_role_switch.driver_data = dwc;

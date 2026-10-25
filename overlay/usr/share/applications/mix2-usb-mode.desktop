@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=USB 模式切换
+Name[en]=Switch USB mode
+Comment=在“接电脑”和“接 Hub/键盘/鼠标”之间切换
+Exec=sudo -n /usr/local/sbin/mix2-usb-mode toggle
+Icon=drive-removable-media-usb
+Categories=Settings;HardwareSettings;
+Terminal=false

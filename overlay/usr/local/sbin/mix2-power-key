@@ -1,0 +1,77 @@
+#!/usr/bin/python3
+"""Power key: a short press blanks the screen or wakes it up again.
+
+X ignores the power key device (xorg.conf.d/40-mix2-power-key.conf), so a
+press does not wake the screen behind our back, and logind only acts on a
+long press (HandlePowerKeyLongPress=poweroff in logind.conf.d/50-mix2.conf). Touching the
+screen also wakes it, as the touch controller keeps running.
+"""
+import glob
+import os
+import struct
+import subprocess
+import time
+
+KEY_POWER = 116
+EV_KEY = 1
+SHORT_PRESS = 1.5  # seconds; longer presses are left to logind
+EVENT = struct.Struct("llHHi")
+
+
+def find_device():
+    for name in glob.glob("/sys/class/input/event*/device/name"):
+        with open(name) as f:
+            if f.read().strip() == "pm8941_pwrkey":
+                return "/dev/input/" + name.split("/")[4]
+    return None
+
+
+def desktop_user():
+    out = subprocess.run(["loginctl", "list-sessions", "--no-legend"],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] not in ("root", "lightdm"):
+            return fields[2]
+    return None
+
+
+def xset(user, *args):
+    home = os.path.expanduser("~" + user)
+    return subprocess.run(["runuser", "-u", user, "--", "env", "DISPLAY=:0",
+                           "XAUTHORITY=" + home + "/.Xauthority", "xset", *args],
+                          capture_output=True, text=True).stdout
+
+
+def toggle_screen():
+    user = desktop_user()
+    if not user:
+        return
+    if "Monitor is On" in xset(user, "q"):
+        xset(user, "dpms", "force", "off")
+    else:
+        xset(user, "dpms", "force", "on")
+
+
+def main():
+    dev = None
+    while dev is None:
+        dev = find_device()
+        if dev is None:
+            time.sleep(2)
+    pressed_at = None
+    with open(dev, "rb") as f:
+        while True:
+            _, _, typ, code, value = EVENT.unpack(f.read(EVENT.size))
+            if typ != EV_KEY or code != KEY_POWER:
+                continue
+            if value == 1:
+                pressed_at = time.monotonic()
+            elif value == 0 and pressed_at is not None:
+                if time.monotonic() - pressed_at < SHORT_PRESS:
+                    toggle_screen()
+                pressed_at = None
+
+
+if __name__ == "__main__":
+    main()

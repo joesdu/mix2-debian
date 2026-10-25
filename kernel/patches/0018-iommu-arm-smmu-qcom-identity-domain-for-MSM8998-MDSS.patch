@@ -1,0 +1,25 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] iommu/arm-smmu-qcom: use an identity domain for the MSM8998 MDSS
+
+The bootloader leaves the panel scanning out its splash screen through
+MMSS SMMU stream 0 in bypass. Since the IOMMU core attaches a default
+domain as soon as the SMMU registers, even before the msm driver binds,
+the MDSS got an empty translating domain: every MDP fetch faulted and
+the resulting context fault interrupt storm stalled the whole boot.
+
+Like the other Qualcomm display subsystems, let the MSM8998 MDSS keep
+an identity mapping until the msm driver attaches its own domain.
+---
+ drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+--- a/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
++++ b/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
+@@ -378,6 +378,7 @@ static const struct of_device_id qcom_smmu_client_of_match[] __maybe_unused = {
+ 	{ .compatible = "qcom,adreno-gmu" },
+ 	{ .compatible = "qcom,mdp4" },
+ 	{ .compatible = "qcom,mdss" },
++	{ .compatible = "qcom,msm8998-mdss" },
+ 	{ .compatible = "qcom,qcm2290-mdss" },
+ 	{ .compatible = "qcom,sar2130p-mdss" },
+ 	{ .compatible = "qcom,sc7180-mdss" },

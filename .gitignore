@@ -1,0 +1,20 @@
+# Device backups: IMEI / calibration partitions and personal files. Never commit.
+/backup/
+
+# SSH keys for the phone, and its own Wi-Fi/Bluetooth addresses
+/keys/
+/kernel/local.dtsi
+
+# Proprietary firmware, downloads, generated images and tools
+/downloads/
+/images/
+/platform-tools/
+/android_kernel_xiaomi_msm8998/
+
+# Research notes, downloaded sources and one-off experiment scripts
+/research/
+/scratch/
+
+# Build and test logs
+*.log
+__pycache__/

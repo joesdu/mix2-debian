@@ -1,0 +1,1023 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Xiaomi Mi MIX 2 (chiron) device tree source, derived from the
+ * Xiaomi Mi 6 (sagit) one which shares the same Xiaomi MSM8998 board design.
+ *
+ * Copyright (c) 2022, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Degdag Mohamed <degdagmohamed@gmail.com>
+ * Copyright (c) 2022, Dzmitry Sankouski <dsankouski@gmail.com>
+ */
+
+/dts-v1/;
+
+#include "msm8998.dtsi"
+#include "pm8005.dtsi"
+#include "pm8998.dtsi"
+#include "pmi8998.dtsi"
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+
+/*
+ * Delete following upstream (msm8998.dtsi) reserved
+ * memory mappings which are different in this device.
+ */
+/delete-node/ &adsp_mem;
+/delete-node/ &mpss_mem;
+/delete-node/ &venus_mem;
+/delete-node/ &mba_mem;
+/delete-node/ &slpi_mem;
+/delete-node/ &ipa_fw_mem;
+/delete-node/ &ipa_gsi_mem;
+/delete-node/ &gpu_mem;
+/delete-node/ &wlan_msa_mem;
+
+/ {
+	model = "Xiaomi Mi MIX 2";
+	compatible = "xiaomi,chiron", "qcom,msm8998";
+	chassis-type = "handset";
+	/* Required for bootloader to select correct board */
+	qcom,msm-id = <292 0x20001>;
+	qcom,board-id = <32 0>;
+
+	/* Lets mix2-usb-mode switch the OTG 5 V output (state: enabled/disabled) */
+	usb-vbus-output {
+		compatible = "regulator-output";
+		vout-supply = <&pmi8998_vbus>;
+	};
+
+	/* 3400 mAh, 4.4 V (stock batterydata-chiron-{atl,cos}-3400mAh) */
+	battery: battery {
+		compatible = "simple-battery";
+		charge-full-design-microamp-hours = <3400000>;
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4400000>;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * Use the video mode panel framebuffer set up by the bootloader
+		 * until there is a panel driver for the JDI NT35596S.
+		 */
+		framebuffer0: framebuffer@9d400000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0x9d400000 0x0 0x2400000>;
+			width = <1080>;
+			height = <2160>;
+			stride = <(1080 * 4)>;
+			format = "a8r8g8b8";
+			/*
+			 * The display controller fetches through the MMSS SMMU
+			 * (left in bypass for this stream by arm-smmu), so its
+			 * clocks must stay on while the SMMU runtime-suspends.
+			 */
+			clocks = <&mmcc MDSS_AHB_CLK>,
+				 <&mmcc MDSS_AXI_CLK>,
+				 <&mmcc MDSS_VSYNC_CLK>,
+				 <&mmcc MDSS_MDP_CLK>,
+				 <&mmcc MDSS_BYTE0_CLK>,
+				 <&mmcc MDSS_BYTE0_INTF_CLK>,
+				 <&mmcc MDSS_PCLK0_CLK>,
+				 <&mmcc MDSS_ESC0_CLK>,
+				 <&mmcc MNOC_AHB_CLK>,
+				 <&mmcc BIMC_SMMU_AHB_CLK>,
+				 <&mmcc BIMC_SMMU_AXI_CLK>;
+			power-domains = <&mmcc MDSS_GDSC>;
+		};
+	};
+
+	reserved-memory {
+		/*
+		 * Xiaomi's ADSP firmware requires 30 MiB in total, so increase the adsp_mem
+		 * region by 4 MiB to account for this while relocating the other now
+		 * conflicting memory nodes accordingly.
+		 */
+		adsp_mem: memory@8b200000 {
+			reg = <0x0 0x8b200000 0x0 0x1e00000>;
+			no-map;
+		};
+
+		mpss_mem: memory@8d000000 {
+			reg = <0x0 0x8d000000 0x0 0x7000000>;
+			no-map;
+		};
+
+		venus_mem: memory@94000000 {
+			reg = <0x0 0x94000000 0x0 0x500000>;
+			no-map;
+		};
+
+		mba_mem: memory@94500000 {
+			reg = <0x0 0x94500000 0x0 0x200000>;
+			no-map;
+		};
+
+		slpi_mem: memory@94700000 {
+			reg = <0x0 0x94700000 0x0 0xf00000>;
+			no-map;
+		};
+
+		ipa_fw_mem: memory@95600000 {
+			reg = <0x0 0x95600000 0x0 0x10000>;
+			no-map;
+		};
+
+		ipa_gsi_mem: memory@95610000 {
+			reg = <0x0 0x95610000 0x0 0x5000>;
+			no-map;
+		};
+
+		gpu_mem: memory@95615000 {
+			reg = <0x0 0x95615000 0x0 0x100000>;
+			no-map;
+		};
+
+		/*
+		 * The stock kernel allocates the WLAN MSA region dynamically, which
+		 * always yields a 1 MiB aligned block, and the modem maps it as such.
+		 * An unaligned region (0x95715000 as on sagit) overlaps gpu_mem from
+		 * the firmware's point of view and crashes the WLAN process.
+		 */
+		wlan_msa_mem: memory@95800000 {
+			reg = <0x0 0x95800000 0x0 0x100000>;
+			no-map;
+		};
+
+		/* Bootloader display framebuffer region */
+		cont_splash_mem: memory@9d400000 {
+			reg = <0x0 0x9d400000 0x0 0x2400000>;
+			no-map;
+		};
+
+		/* For getting crash logs using Android downstream kernels */
+		ramoops@b0000000 {
+			compatible = "ramoops";
+			reg = <0x0 0xb0000000 0x0 0x200000>;
+			/* Same layout as the stock kernel so either side can read the other's logs */
+			console-size = <0x100000>;
+			pmsg-size = <0x80000>;
+			record-size = <0x20000>;
+		};
+
+		/*
+		 * The following memory regions on downstream are "dynamically allocated"
+		 * but given the same addresses every time. Hard code them as these addresses
+		 * are where the Xiaomi signed firmware expects them to be.
+		 */
+		ipa_fws_region: memory@f7800000 {
+			compatible = "shared-dma-pool";
+			reg = <0x0 0xf7800000 0x0 0x5000>;
+			no-map;
+		};
+
+		zap_shader_region: memory@f7900000 {
+			compatible = "shared-dma-pool";
+			reg = <0x0 0xf7900000 0x0 0x2000>;
+			no-map;
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+		label = "Volume buttons";
+		autorepeat;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&vol_up_key_default>;
+
+		key-vol-up {
+			label = "Volume up";
+			gpios = <&pm8998_gpios 6 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+			wakeup-source;
+		};
+	};
+
+	gpio-hall-sensor {
+		compatible = "gpio-keys";
+		label = "Hall effect sensor";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&hall_sensor_default_state>;
+
+		event-hall-sensor {
+			label = "Hall Effect Sensor";
+			gpios = <&tlmm 124 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			linux,can-disable;
+			wakeup-source;
+		};
+	};
+
+	vph_pwr: vph-pwr-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vph_pwr";
+		regulator-min-microvolt = <3700000>;
+		regulator-max-microvolt = <3700000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	disp_vddts_vreg: disp-vddts-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "disp-vddts-regulator";
+		gpio = <&tlmm 50 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <4000>;
+		regulator-boot-on;
+		/*
+		 * Touch AVDD. Keep it up while the touch driver restarts the
+		 * in-cell controller with ts-reset after each panel power up.
+		 */
+		regulator-always-on;
+	};
+
+	/*
+	 * The touch controller is held in reset (GPIO 89 low) by the bootloader
+	 * and rmi4-i2c has no reset GPIO support. Model the reset line as a
+	 * switch behind the touch supply so that enabling the supply releases
+	 * reset and waits for the controller to boot, like the stock driver.
+	 */
+	ts_reset_vreg: ts-reset-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "ts-reset";
+		gpio = <&tlmm 89 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <200000>;
+		vin-supply = <&disp_vddts_vreg>;
+	};
+};
+
+&adreno_gpu {
+	/* Lets adreno scale VDD_GFX with the OPPs below (patch 0017) */
+	vdd-supply = <&pm8005_s1>;
+	status = "okay";
+
+	zap-shader {
+		memory-region = <&zap_shader_region>;
+		firmware-name = "qcom/msm8998/xiaomi/chiron/a540_zap.mdt";
+	};
+};
+
+/*
+ * Without GFX CPR the downstream per-corner CPR ceilings are the only
+ * voltages safe for every fused part (values from porthole-dev's wahoo
+ * port). 670 and 710 MHz are left out: there is no GPU thermal mitigation
+ * yet and the a540 hangs at its top clocks once the SoC runs hot.
+ */
+&gpu_opp_table {
+	/delete-node/ opp-710000097;
+	/delete-node/ opp-670000048;
+
+	opp-596000097 {
+		opp-microvolt = <968000 968000 1100000>;
+	};
+
+	opp-515000097 {
+		opp-microvolt = <916000 916000 1100000>;
+	};
+
+	opp-414000000 {
+		opp-microvolt = <832000 832000 1100000>;
+	};
+
+	opp-342000000 {
+		opp-microvolt = <772000 772000 1100000>;
+	};
+
+	opp-257000000 {
+		opp-microvolt = <724000 724000 1100000>;
+	};
+};
+
+&blsp1_i2c5 {
+	pinctrl-names = "default", "sleep";
+	status = "okay";
+
+	touchscreen@20 {
+		compatible = "syna,rmi4-i2c";
+		reg = <0x20>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		interrupt-parent = <&tlmm>;
+		/*
+		 * Level, like stock: after the controller is restarted its ATTN
+		 * is already low when the interrupt gets enabled again.
+		 */
+		interrupts = <125 IRQ_TYPE_LEVEL_LOW>;
+
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&ts_active_state>;
+		pinctrl-1 = <&ts_int_suspend_state &ts_reset_suspend_state>;
+
+		vdd-supply = <&ts_reset_vreg>;
+		vio-supply = <&vreg_l6a_1p8>;
+
+		/* In-cell: restart the controller after each panel power up */
+		panel = <&panel>;
+
+		syna,reset-delay-ms = <20>;
+		syna,startup-delay-ms = <20>;
+
+		rmi4-f01@1 {
+			reg = <0x01>;
+			syna,nosleep-mode = <1>;
+		};
+
+		rmi4-f12@12 {
+			reg = <0x12>;
+			touchscreen-x-mm = <68>;
+			touchscreen-y-mm = <136>;
+			syna,sensor-type = <1>;
+			syna,rezero-wait-ms = <20>;
+		};
+	};
+};
+
+&blsp1_uart3 {
+	status = "okay";
+
+	/*
+	 * The factory address (local-bd-address) is per phone and comes from
+	 * kernel/local.dtsi, see kernel/local.dtsi.example
+	 */
+	bluetooth: bluetooth {
+		compatible = "qcom,wcn3990-bt";
+
+		vddio-supply = <&vreg_s4a_1p8>;
+		vddxo-supply = <&vreg_l7a_1p8>;
+		vddrf-supply = <&vreg_l17a_1p3>;
+		vddch0-supply = <&vreg_l25a_3p3>;
+		max-speed = <3200000>;
+	};
+};
+
+&blsp1_uart3_on {
+	rx-pins {
+		/delete-property/ bias-disable;
+		/*
+		 * Configure a pull-up on 46 (RX). This is needed to
+		 * avoid garbage data when the TX pin of the Bluetooth
+		 * module is in tri-state (module powered off or not
+		 * driving the signal yet).
+		 */
+		bias-pull-up;
+	};
+
+	cts-pins {
+		/delete-property/ bias-disable;
+		/*
+		 * Configure a pull-down on 47 (CTS) to match the pull
+		 * of the Bluetooth module.
+		 */
+		bias-pull-down;
+	};
+};
+
+&blsp2_uart1 {
+	status = "okay";
+};
+
+/*
+ * LCD bias rails of the JDI panel. Like stock Android (use-default-voltage),
+ * clear the voltage override and run both at the PMIC default (patch 0019),
+ * which is what the bootloader leaves the panel running at.
+ */
+&lab {
+	qcom,use-default-voltage;
+};
+
+&ibb {
+	qcom,use-default-voltage;
+};
+
+&mdss {
+	/*
+	 * Reset the MDSS when msm probes: the bootloader's splash pipeline
+	 * (fetching from cont_splash_mem) otherwise keeps running, blocks the
+	 * DSI video engine and the panel init commands time out.
+	 */
+	resets = <&mmcc MDSS_BCR>;
+	status = "okay";
+};
+
+&mdss_mdp {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	vdd-supply = <&vreg_l1a_0p875>;
+	vdda-supply = <&vreg_l2a_1p2>;
+	status = "okay";
+
+	panel: panel@0 {
+		compatible = "xiaomi,chiron-jdi-nt35596s";
+		reg = <0>;
+
+		reset-gpios = <&tlmm 94 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&panel_reset_n>;
+
+		/* Stock dsi_panel_pwr_supply_jdi_nt35596s: wqhd-vddio, lab, ibb */
+		vddio-supply = <&vreg_l14a_1p8>;
+		vsp-supply = <&lab>;
+		vsn-supply = <&ibb>;
+
+		backlight = <&pmi8998_wled>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&mdss_dsi0_out>;
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	data-lanes = <0 1 2 3>;
+	remote-endpoint = <&panel_in>;
+};
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l1a_0p875>;
+
+	/*
+	 * The D-PHY timings the bootloader programs, read back from the PHY.
+	 * With the computed ones the in-cell touch reports X ~160 px off.
+	 */
+	qcom,phy-timing = /bits/ 8 <0x00 0x1d 0x05 0x06 0x0b 0x0b
+				    0x06 0x07 0x05 0x03 0x04 0x00>;
+	qcom,phy-clk-pre-post = /bits/ 8 <0x29 0x08>;
+
+	status = "okay";
+};
+
+/*
+ * There is no CPU DVFS on this board yet, so the clusters stay at the
+ * bootloader's frequencies: the gold cluster is left near its minimum and
+ * measures about 1/4 of a silver core. Tell the scheduler so that busy
+ * tasks go to the silver cores instead of the nominally faster gold ones.
+ */
+&cpu0 { capacity-dmips-mhz = <1024>; };
+&cpu1 { capacity-dmips-mhz = <1024>; };
+&cpu2 { capacity-dmips-mhz = <1024>; };
+&cpu3 { capacity-dmips-mhz = <1024>; };
+&cpu4 { capacity-dmips-mhz = <260>; };
+&cpu5 { capacity-dmips-mhz = <260>; };
+&cpu6 { capacity-dmips-mhz = <260>; };
+&cpu7 { capacity-dmips-mhz = <260>; };
+
+&pmi8998_charger {
+	monitored-battery = <&battery>;
+	status = "okay";
+};
+
+&pmi8998_lsid0 {
+	/*
+	 * 5 V OTG output on the USB-C port for hubs, keyboards and mice.
+	 * The SMB2 OTG block uses the same registers as the PM8150B one.
+	 */
+	pmi8998_vbus: usb-vbus-regulator@1100 {
+		compatible = "qcom,pm8150b-vbus-reg";
+		reg = <0x1100>;
+		regulator-min-microamp = <500000>;
+		regulator-max-microamp = <1500000>;
+	};
+};
+
+&pmi8998_fg {
+	qcom,min-voltage-uv = <3400000>;
+	qcom,max-voltage-uv = <4400000>;
+	qcom,battery-capacity-ua = <3400000>;
+	status = "okay";
+};
+
+/* LCD backlight, settings taken from the stock qpnp-wled node */
+&pmi8998_wled {
+	qcom,current-boost-limit = <970>;
+	qcom,ovp-millivolt = <19600>;
+	qcom,current-limit-microamp = <20000>;
+	qcom,num-strings = <4>;
+	qcom,switching-freq = <600>;
+	qcom,external-pfet;
+	/*
+	 * No qcom,cabc: following the panel's PWM output, the strings stopped
+	 * sinking current in its off phases and WLED ran into OVP ~110 times a
+	 * second (visible flicker), and stayed dark after a panel re-init.
+	 */
+	status = "okay";
+};
+
+&pm8005_regulators {
+	compatible = "qcom,pm8005-regulators";
+
+	vdd_s1-supply = <&vph_pwr>;
+
+	pm8005_s1: s1 { /* VDD_GFX supply, scaled by the GPU OPP table */
+		regulator-min-microvolt = <724000>;
+		regulator-max-microvolt = <1100000>;
+		regulator-enable-ramp-delay = <500>;
+		regulator-always-on;
+	};
+};
+
+&pm8998_gpios {
+	vol_up_key_default: vol-up-key-default-state {
+		pins = "gpio6";
+		function = "normal";
+		bias-pull-up;
+		input-enable;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_NO>;
+	};
+
+	audio_mclk_pin: audio-mclk-pin-active-state {
+		pins = "gpio13";
+		function = "func2";
+		power-source = <0>;
+	};
+};
+
+&qusb2phy {
+	vdd-supply = <&vreg_l1a_0p875>;
+	vdda-pll-supply = <&vreg_l12a_1p8>;
+	vdda-phy-dpdm-supply = <&vreg_l24a_3p075>;
+	status = "okay";
+};
+
+&remoteproc_adsp {
+	firmware-name = "qcom/msm8998/xiaomi/chiron/adsp.mdt";
+	status = "okay";
+};
+
+&remoteproc_mss {
+	firmware-name = "qcom/msm8998/xiaomi/chiron/mba.mbn",
+			"qcom/msm8998/xiaomi/chiron/modem.mdt";
+	status = "okay";
+};
+
+&remoteproc_slpi {
+	firmware-name = "qcom/msm8998/xiaomi/chiron/slpi_v2.mdt";
+	status = "okay";
+};
+
+&rpm_requests {
+	regulators-0 {
+		compatible = "qcom,rpm-pm8998-regulators";
+
+		vdd_s1-supply = <&vph_pwr>;
+		vdd_s2-supply = <&vph_pwr>;
+		vdd_s3-supply = <&vph_pwr>;
+		vdd_s4-supply = <&vph_pwr>;
+		vdd_s5-supply = <&vph_pwr>;
+		vdd_s6-supply = <&vph_pwr>;
+		vdd_s7-supply = <&vph_pwr>;
+		vdd_s8-supply = <&vph_pwr>;
+		vdd_s9-supply = <&vph_pwr>;
+		vdd_s10-supply = <&vph_pwr>;
+		vdd_s11-supply = <&vph_pwr>;
+		vdd_s12-supply = <&vph_pwr>;
+		vdd_s13-supply = <&vph_pwr>;
+		vdd_l1_l27-supply = <&vreg_s7a_1p025>;
+		vdd_l2_l8_l17-supply = <&vreg_s3a_1p35>;
+		vdd_l3_l11-supply = <&vreg_s7a_1p025>;
+		vdd_l4_l5-supply = <&vreg_s7a_1p025>;
+		vdd_l6-supply = <&vreg_s5a_2p04>;
+		vdd_l7_l12_l14_l15-supply = <&vreg_s5a_2p04>;
+		vdd_l9-supply = <&vreg_bob>;
+		vdd_l10_l23_l25-supply = <&vreg_bob>;
+		vdd_l13_l19_l21-supply = <&vreg_bob>;
+		vdd_l16_l28-supply = <&vreg_bob>;
+		vdd_l18_l22-supply = <&vreg_bob>;
+		vdd_l20_l24-supply = <&vreg_bob>;
+		vdd_l26-supply = <&vreg_s3a_1p35>;
+		vdd_lvs1_lvs2-supply = <&vreg_s4a_1p8>;
+
+		vreg_s3a_1p35: s3 {
+			regulator-min-microvolt = <1352000>;
+			regulator-max-microvolt = <1352000>;
+		};
+
+		vreg_s4a_1p8: s4 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-allow-set-load;
+		};
+
+		vreg_s5a_2p04: s5 {
+			regulator-min-microvolt = <1904000>;
+			regulator-max-microvolt = <2040000>;
+		};
+
+		vreg_s7a_1p025: s7 {
+			regulator-min-microvolt = <900000>;
+			regulator-max-microvolt = <1028000>;
+		};
+
+		vreg_l1a_0p875: l1 {
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			/* Also DSI PHY vdda-0p9: keep the bootloader display alive */
+			regulator-always-on;
+		};
+
+		vreg_l2a_1p2: l2 {
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			/* Also DSI PHY vdda-1p2 */
+			regulator-always-on;
+		};
+
+		vreg_l3a_1p0: l3 {
+			regulator-min-microvolt = <1000000>;
+			regulator-max-microvolt = <1000000>;
+		};
+
+		/*
+		 * L5/L7/L17/L25 feed the WCN3990. Stock puts them under WCN3990
+		 * pin control (HPM while the chip requests power), which this
+		 * driver cannot express; a base load keeps them in HPM instead,
+		 * otherwise the RF supplies sag and the WLAN firmware locks up.
+		 */
+		vreg_l5a_0p8: l5 {
+			regulator-min-microvolt = <800000>;
+			regulator-max-microvolt = <800000>;
+			regulator-allow-set-load;
+			regulator-system-load = <100000>;
+			regulator-always-on;
+		};
+
+		vreg_l6a_1p8: l6 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		vreg_l7a_1p8: l7 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-allow-set-load;
+			regulator-system-load = <100000>;
+			regulator-always-on;
+		};
+
+		vreg_l8a_1p2: l8 {
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+		};
+
+		vreg_l9a_1p8: l9 {
+			regulator-min-microvolt = <1808000>;
+			regulator-max-microvolt = <2960000>;
+		};
+
+		vreg_l10a_1p8: l10 {
+			regulator-min-microvolt = <1808000>;
+			regulator-max-microvolt = <2960000>;
+		};
+
+		vreg_l11a_1p0: l11 {
+			regulator-min-microvolt = <1000000>;
+			regulator-max-microvolt = <1000000>;
+		};
+
+		vreg_l12a_1p8: l12 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		vreg_l13a_2p95: l13 {
+			regulator-min-microvolt = <1808000>;
+			regulator-max-microvolt = <2960000>;
+		};
+
+		vreg_l14a_1p8: l14 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			/* Panel VDDIO */
+			regulator-always-on;
+		};
+
+		vreg_l15a_1p8: l15 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		vreg_l16a_2p7: l16 {
+			regulator-min-microvolt = <2704000>;
+			regulator-max-microvolt = <2704000>;
+		};
+
+		vreg_l17a_1p3: l17 {
+			regulator-min-microvolt = <1304000>;
+			regulator-max-microvolt = <1304000>;
+			regulator-allow-set-load;
+			regulator-system-load = <100000>;
+			regulator-always-on;
+		};
+
+		vreg_l18a_2p7: l18 {
+			regulator-min-microvolt = <2704000>;
+			regulator-max-microvolt = <2704000>;
+		};
+
+		vreg_l19a_3p0: l19 {
+			regulator-min-microvolt = <3008000>;
+			regulator-max-microvolt = <3008000>;
+		};
+
+		vreg_l20a_2p95: l20 {
+			regulator-min-microvolt = <2960000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-allow-set-load;
+		};
+
+		vreg_l21a_2p95: l21 {
+			regulator-min-microvolt = <2960000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-system-load = <800000>;
+			regulator-allow-set-load;
+		};
+
+		vreg_l22a_2p85: l22 {
+			regulator-min-microvolt = <2864000>;
+			regulator-max-microvolt = <2864000>;
+		};
+
+		vreg_l23a_3p3: l23 {
+			regulator-min-microvolt = <3312000>;
+			regulator-max-microvolt = <3312000>;
+		};
+
+		vreg_l24a_3p075: l24 {
+			regulator-min-microvolt = <3088000>;
+			regulator-max-microvolt = <3088000>;
+		};
+
+		/* WCN3990 RF supply: the stock kernel runs it at 3.312 V */
+		vreg_l25a_3p3: l25 {
+			regulator-min-microvolt = <3312000>;
+			regulator-max-microvolt = <3312000>;
+			regulator-allow-set-load;
+			regulator-system-load = <100000>;
+			regulator-always-on;
+		};
+
+		vreg_l26a_1p2: l26 {
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-allow-set-load;
+		};
+
+		vreg_l28_3p0: l28 {
+			regulator-min-microvolt = <3008000>;
+			regulator-max-microvolt = <3008000>;
+		};
+
+		vreg_lvs1a_1p8: lvs1 { };
+
+		vreg_lvs2a_1p8: lvs2 { };
+	};
+
+	regulators-1 {
+		compatible = "qcom,rpm-pmi8998-regulators";
+
+		vdd_bob-supply = <&vph_pwr>;
+
+		/*
+		 * Stock votes BOB to 3.6 V (bt-chip-pwd on bob_pin1) while the
+		 * WCN3990 is on; L25 needs that headroom to reach 3.312 V.
+		 */
+		vreg_bob: bob {
+			regulator-min-microvolt = <3600000>;
+			regulator-max-microvolt = <3600000>;
+			regulator-always-on;
+		};
+	};
+};
+
+&tlmm {
+	gpio-reserved-ranges = <0 4>, <81 4>;
+
+	panel_reset_n: panel-reset-n-state {
+		pins = "gpio94";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	cci1_default_state: cci1-default-state {
+		pins = "gpio19", "gpio20";
+		function = "cci_i2c";
+		bias-disable;
+		drive-strength = <2>;
+	};
+
+	cdc_reset_n_state: cdc-reset-n-state {
+		pins = "gpio64";
+		function = "gpio";
+		bias-pull-down;
+		drive-strength = <16>;
+		output-high;
+	};
+
+	hall_sensor_default_state: hall-sensor-default-state {
+		pins = "gpio124";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	mdss_dsi_active_state: mdss-dsi-active-state {
+		pins = "gpio94";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	mdss_dsi_suspend_state: mdss-dsi-suspend-state {
+		pins = "gpio94";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	mdss_te_state: mdss-te-state {
+		pins = "gpio10";
+		function = "mdp_vsync_a";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	msm_mclk0_active_state: msm-mclk0-active-state {
+		pins = "gpio13";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	msm_mclk0_suspend_state: msm-mclk0-suspend-state {
+		pins = "gpio13";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	msm_mclk1_active_state: msm-mclk1-active-state {
+		pins = "gpio14";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	msm_mclk1_suspend_state: msm-mclk1-suspend-state {
+		pins = "gpio14";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	nfc_int_active_state: nfc-int-active-state {
+		pins = "gpio92";
+		function = "gpio";
+		drive-strength = <6>;
+		bias-pull-up;
+	};
+
+	nfc_int_suspend_state: nfc-int-suspend-state {
+		pins = "gpio92";
+		function = "gpio";
+		drive-strength = <6>;
+		bias-pull-up;
+	};
+
+	nfc_enable_active_state: nfc-enable-active-state {
+		pins = "gpio12", "gpio116";
+		function = "gpio";
+		drive-strength = <6>;
+		bias-pull-up;
+	};
+
+	nfc_enable_suspend_state: nfc-enable-suspend-state {
+		pins = "gpio12", "gpio116";
+		function = "gpio";
+		drive-strength = <6>;
+		bias-disable;
+	};
+
+	ts_active_state: ts-active-state {
+		pins = "gpio89", "gpio125";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-up;
+	};
+
+	ts_int_suspend_state: ts-int-suspend-state {
+		pins = "gpio125";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	ts_reset_suspend_state: ts-reset-suspend-state {
+		pins = "gpio89";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	wcd_int_n_state: wcd-int-n-state {
+		pins = "gpio54";
+		function = "gpio";
+		bias-pull-down;
+		drive-strength = <2>;
+	};
+
+	wsa_leftspk_pwr_n_state: wsa-leftspk-pwr-n-state {
+		pins = "gpio65";
+		function = "gpio";
+		bias-disable;
+		drive-strength = <2>;
+		output-low;
+	};
+
+	wsa_rightspk_pwr_n_state: wsa-rightspk-pwr-n-state {
+		pins = "gpio66";
+		function = "gpio";
+		bias-disable;
+		drive-strength = <2>;
+		output-low;
+	};
+};
+
+&pm8998_resin {
+	linux,code = <KEY_VOLUMEDOWN>;
+	status = "okay";
+};
+
+&ufshc {
+	vcc-supply = <&vreg_l20a_2p95>;
+	vccq-supply = <&vreg_l26a_1p2>;
+	vccq2-supply = <&vreg_s4a_1p8>;
+	vdd-hba-supply = <&vreg_l26a_1p2>;
+	vcc-max-microamp = <750000>;
+	vccq-max-microamp = <560000>;
+	vccq2-max-microamp = <750000>;
+	status = "okay";
+};
+
+&ufsphy {
+	vdda-phy-supply = <&vreg_l1a_0p875>;
+	vdda-pll-supply = <&vreg_l2a_1p2>;
+	status = "okay";
+};
+
+&usb3 {
+	/* Disable USB3 clock requirement as the device only supports USB2 */
+	qcom,select-utmi-as-pipe-clk;
+	status = "okay";
+};
+
+&usb3_dwc3 {
+	/* Drop the unused USB 3 PHY */
+	phys = <&qusb2phy>;
+	phy-names = "usb2-phy";
+
+	/* Fastest mode for USB 2 */
+	maximum-speed = "high-speed";
+
+	/*
+	 * Dual role, switched from userspace through
+	 * /sys/class/usb_role/a800000.usb-role-switch/role (mix2-usb-mode).
+	 * Boot as a device so USB networking to a computer always works.
+	 */
+	dr_mode = "otg";
+	usb-role-switch;
+	role-switch-default-mode = "peripheral";
+};
+
+&wifi {
+	/* Board data from this phone's bdwlan.bin (see board-2.bin in /lib/firmware/updates) */
+	qcom,calibration-variant = "xiaomi_chiron";
+	/* The factory MAC (local-mac-address) comes from kernel/local.dtsi */
+	/*
+	 * The MSM8998 WLAN.HL.1.0 firmware has no calibration above channel
+	 * 165. It scans channels in pairs, and a pair holding 165 and 169
+	 * (always the case on a full scan) kills the WLAN process
+	 * (halphy_caldb.c assertion), which then takes the modem down.
+	 * Keep channel 165 and drop 169/173. Found by the Pixel 2 (wahoo)
+	 * port in porthole-dev/pmaports.
+	 */
+	ieee80211-freq-limit = <2400000 2500000>,
+			       <5150000 5835000>;
+	vdd-0.8-cx-mx-supply = <&vreg_l5a_0p8>;
+	vdd-1.8-xo-supply = <&vreg_l7a_1p8>;
+	vdd-1.3-rfa-supply = <&vreg_l17a_1p3>;
+	vdd-3.3-ch0-supply = <&vreg_l25a_3p3>;
+	status = "okay";
+};

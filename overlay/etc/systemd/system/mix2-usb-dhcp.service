@@ -1,0 +1,16 @@
+[Unit]
+Description=DHCP server for the USB network link to the computer
+After=mix2-usb-gadget.service
+Requires=mix2-usb-gadget.service
+
+[Service]
+# One address for the computer, no gateway or DNS so its internet stays untouched
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --port=0 \
+	--interface=usb0 --bind-dynamic \
+	--dhcp-range=172.16.42.2,172.16.42.2,255.255.255.0,12h \
+	--dhcp-option=3 --dhcp-option=6 --dhcp-leasefile=/run/mix2-usb-dhcp.leases
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

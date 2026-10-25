@@ -1,0 +1,27 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] wifi: ath10k: skip quiet mode for WCN3990
+
+Sending WMI_PDEV_SET_QUIET_MODE to WCN3990 crashes the firmware's WLAN
+process (PDM: 'EX:wlan_process:1:WLAN RT:...'), which then takes the
+modem down through its watchdog. The THERM_THROT service bit does not
+reliably tell whether the firmware copes with it (seen on the Xiaomi
+Mi MIX 2 with WLAN.HL.1.0 and on HL3.2), so never send it to WCN3990.
+
+Based on the workaround proposed on linux-wireless in March 2026.
+---
+ drivers/net/wireless/ath/ath10k/thermal.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath10k/thermal.c
++++ b/drivers/net/wireless/ath/ath10k/thermal.c
+@@ -136,6 +136,10 @@ void ath10k_thermal_set_throttling(struct ath10k *ar)
+ 	if (!ar->wmi.ops->gen_pdev_set_quiet_mode)
+ 		return;
+ 
++	/* The WCN3990 firmware crashes on the quiet mode command */
++	if (QCA_REV_WCN3990(ar))
++		return;
++
+ 	if (ar->state != ATH10K_STATE_ON)
+ 		return;
+ 

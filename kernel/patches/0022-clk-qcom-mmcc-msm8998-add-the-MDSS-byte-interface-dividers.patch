@@ -1,0 +1,86 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] clk: qcom: mmcc-msm8998: add the MDSS byte interface dividers
+
+mdss_byte{0,1}_intf_clk sit behind MMSS_MDSS_BYTE{0,1}_INTF_DIV (0x237c,
+0x2380; see the downstream clock-mmss-8998.c), like the byte dividers of
+the SDM845 dispcc. Without them the DSI host's request for byte_intf at
+half the byte clock propagated to byte0_clk_src: the DSI byte clock was
+halved (57.5 instead of 115 MHz on the Mi MIX 2, 30 fps, and a black panel
+after the first DPMS cycle).
+---
+--- a/drivers/clk/qcom/mmcc-msm8998.c	2026-10-25 16:19:12.544770039 +0800
++++ b/drivers/clk/qcom/mmcc-msm8998.c	2026-10-25 16:19:12.567931676 +0800
+@@ -1569,6 +1569,35 @@
+ 	},
+ };
+ 
++/*
++ * The DSI host runs byte_intf at half the byte clock. Without these
++ * dividers its rate request went straight to byte*_clk_src and halved the
++ * DSI byte clock.
++ */
++static struct clk_regmap_div mdss_byte0_intf_div_clk = {
++	.reg = 0x237c,
++	.shift = 0,
++	.width = 2,
++	.clkr.hw.init = &(struct clk_init_data){
++		.name = "mdss_byte0_intf_div_clk",
++		.parent_hws = (const struct clk_hw *[]){ &byte0_clk_src.clkr.hw },
++		.num_parents = 1,
++		.ops = &clk_regmap_div_ops,
++	},
++};
++
++static struct clk_regmap_div mdss_byte1_intf_div_clk = {
++	.reg = 0x2380,
++	.shift = 0,
++	.width = 2,
++	.clkr.hw.init = &(struct clk_init_data){
++		.name = "mdss_byte1_intf_div_clk",
++		.parent_hws = (const struct clk_hw *[]){ &byte1_clk_src.clkr.hw },
++		.num_parents = 1,
++		.ops = &clk_regmap_div_ops,
++	},
++};
++
+ static struct clk_branch mdss_byte0_intf_clk = {
+ 	.halt_reg = 0x2374,
+ 	.clkr = {
+@@ -1576,7 +1605,7 @@
+ 		.enable_mask = BIT(0),
+ 		.hw.init = &(struct clk_init_data){
+ 			.name = "mdss_byte0_intf_clk",
+-			.parent_hws = (const struct clk_hw *[]){ &byte0_clk_src.clkr.hw },
++			.parent_hws = (const struct clk_hw *[]){ &mdss_byte0_intf_div_clk.clkr.hw },
+ 			.num_parents = 1,
+ 			.ops = &clk_branch2_ops,
+ 			.flags = CLK_SET_RATE_PARENT,
+@@ -1591,7 +1620,7 @@
+ 		.enable_mask = BIT(0),
+ 		.hw.init = &(struct clk_init_data){
+ 			.name = "mdss_byte1_intf_clk",
+-			.parent_hws = (const struct clk_hw *[]){ &byte1_clk_src.clkr.hw },
++			.parent_hws = (const struct clk_hw *[]){ &mdss_byte1_intf_div_clk.clkr.hw },
+ 			.num_parents = 1,
+ 			.ops = &clk_branch2_ops,
+ 			.flags = CLK_SET_RATE_PARENT,
+@@ -2711,6 +2740,8 @@
+ 	[MDSS_DP_AUX_CLK] = &mdss_dp_aux_clk.clkr,
+ 	[MDSS_BYTE0_INTF_CLK] = &mdss_byte0_intf_clk.clkr,
+ 	[MDSS_BYTE1_INTF_CLK] = &mdss_byte1_intf_clk.clkr,
++	[MDSS_BYTE0_INTF_DIV_CLK] = &mdss_byte0_intf_div_clk.clkr,
++	[MDSS_BYTE1_INTF_DIV_CLK] = &mdss_byte1_intf_div_clk.clkr,
+ 	[CAMSS_CSI0PHYTIMER_CLK] = &camss_csi0phytimer_clk.clkr,
+ 	[CAMSS_CSI1PHYTIMER_CLK] = &camss_csi1phytimer_clk.clkr,
+ 	[CAMSS_CSI2PHYTIMER_CLK] = &camss_csi2phytimer_clk.clkr,
+--- a/include/dt-bindings/clock/qcom,mmcc-msm8998.h	2026-10-25 16:19:12.549061649 +0800
++++ b/include/dt-bindings/clock/qcom,mmcc-msm8998.h	2026-10-25 16:19:12.579791375 +0800
+@@ -152,6 +152,8 @@
+ #define MNOC_MAXI_CLK					143
+ #define VMEM_MAXI_CLK					144
+ #define VMEM_AHB_CLK					145
++#define MDSS_BYTE0_INTF_DIV_CLK			146
++#define MDSS_BYTE1_INTF_DIV_CLK			147
+ 
+ #define SPDM_BCR					0
+ #define SPDM_RM_BCR					1

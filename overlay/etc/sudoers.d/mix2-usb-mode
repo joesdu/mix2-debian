@@ -1,0 +1,2 @@
+# Let the desktop user switch the USB-C port role without a password
+mix2 ALL=(root) NOPASSWD: /usr/local/sbin/mix2-usb-mode

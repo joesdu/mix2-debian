@@ -1,0 +1,76 @@
+#!/bin/sh
+# Bring-up initramfs for the Mi MIX 2: runs entirely from RAM, touches no storage.
+# Provides a USB NCM network link (phone 172.16.42.1) with telnet and a raw shell port.
+
+/bin/busybox --install -s /bin
+export PATH=/bin
+
+mkdir -p /proc /sys /dev /tmp /run
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
+mount -t configfs configfs /sys/kernel/config
+mount -t pstore pstore /sys/fs/pstore 2>/dev/null
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
+
+log() { echo "[mix2-init] $*" > /dev/kmsg; echo "[mix2-init] $*" > /dev/tty0; }
+
+log "Debian bring-up initramfs on $(uname -r)"
+
+# The UDC appears once dwc3 probes; give it a moment.
+for i in $(seq 1 50); do
+	[ -n "$(ls /sys/class/udc 2>/dev/null)" ] && break
+	sleep 0.2
+done
+
+G=/sys/kernel/config/usb_gadget/g1
+mkdir -p $G
+echo 0x1d6b > $G/idVendor     # Linux Foundation
+echo 0x0104 > $G/idProduct    # Multifunction Composite Gadget
+echo 0x0200 > $G/bcdUSB
+echo 0xEF > $G/bDeviceClass
+echo 0x02 > $G/bDeviceSubClass
+echo 0x01 > $G/bDeviceProtocol
+mkdir -p $G/strings/0x409
+echo "Xiaomi" > $G/strings/0x409/manufacturer
+echo "Mi MIX 2 Linux bring-up" > $G/strings/0x409/product
+echo "chiron-bringup" > $G/strings/0x409/serialnumber
+mkdir -p $G/functions/ncm.usb0
+mkdir -p $G/configs/c.1/strings/0x409
+echo "NCM" > $G/configs/c.1/strings/0x409/configuration
+echo 500 > $G/configs/c.1/MaxPower
+ln -s $G/functions/ncm.usb0 $G/configs/c.1/
+UDC=$(ls /sys/class/udc | head -1)
+if [ -n "$UDC" ]; then
+	echo "$UDC" > $G/UDC && log "USB gadget bound to $UDC"
+else
+	log "no USB device controller found"
+fi
+
+sleep 1
+ifconfig lo 127.0.0.1 up
+ifconfig usb0 172.16.42.1 netmask 255.255.255.0 up && log "usb0 up at 172.16.42.1"
+
+cat > /tmp/udhcpd.conf <<EOF
+start 172.16.42.2
+end 172.16.42.2
+interface usb0
+max_leases 1
+option subnet 255.255.255.0
+lease_file /tmp/udhcpd.leases
+EOF
+touch /tmp/udhcpd.leases
+udhcpd /tmp/udhcpd.conf
+
+telnetd -l /bin/sh -p 23
+# Raw shell on port 5555 for scripted access from the PC
+( while true; do nc -l -p 5555 -e /bin/sh; done ) &
+
+log "telnet 172.16.42.1 23 / raw shell 172.16.42.1 5555"
+log "touch the screen to test input; hold power ~10s to reboot"
+
+# Keep PID 1 alive and give a local console on the screen
+while true; do
+	setsid cttyhack sh -c 'exec sh </dev/tty1 >/dev/tty1 2>&1' 2>/dev/null || sleep 5
+done

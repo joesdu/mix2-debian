@@ -1,0 +1,495 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] drm/panel: add JDI NT35596S panel of the Xiaomi Mi MIX 2
+
+Started from linux-mdss-dsi-panel-driver-generator output for the panel
+node (qcom,mdss_dsi_jdi_fhd_nt35596s_video) of the stock Xiaomi device tree,
+then fixed up on the device:
+
+- timings and DSI mode as read back from the DSI controller the bootloader
+  programs: non-burst with sync events, no HSE (the stock DT says burst+HSE,
+  which upsets the in-cell touch)
+- the stock on-command (long_init, default) and the XBL panel XML sequence;
+  the generator had turned the 1-byte 0x51 writes into 2-byte brightness
+- handover (default): keep the panel the bootloader brought up at boot
+- never send display off / sleep in: this panel then stops answering on the
+  link for good. The supplies stay on and every later prepare resets and
+  initialises it again (the backlight is switched off meanwhile)
+---
+--- a/drivers/gpu/drm/panel/Kconfig	2026-10-25 17:08:39.643437829 +0800
++++ b/drivers/gpu/drm/panel/Kconfig	2026-10-25 17:08:39.643560686 +0800
+@@ -339,6 +339,16 @@
+ 	  24 bit per pixel.
+ 
+ 
++config DRM_PANEL_JDI_NT35596S
++	tristate "JDI NT35596S FHD+ video mode panel (Xiaomi Mi MIX 2)"
++	depends on OF
++	depends on DRM_MIPI_DSI
++	depends on BACKLIGHT_CLASS_DEVICE
++	help
++	  Say Y here if you want to enable support for the JDI 1080x2160
++	  video mode DSI panel with the Novatek NT35596S driver IC found in
++	  the Xiaomi Mi MIX 2 (chiron).
++
+ config DRM_PANEL_JDI_R63452
+ 	tristate "JDI R63452 Full HD DSI panel"
+ 	depends on OF
+--- a/drivers/gpu/drm/panel/Makefile	2026-10-25 17:08:39.643484252 +0800
++++ b/drivers/gpu/drm/panel/Makefile	2026-10-25 17:08:39.643681583 +0800
+@@ -34,6 +34,7 @@
+ obj-$(CONFIG_DRM_PANEL_JADARD_JD9365DA_H3) += panel-jadard-jd9365da-h3.o
+ obj-$(CONFIG_DRM_PANEL_JDI_LT070ME05000) += panel-jdi-lt070me05000.o
+ obj-$(CONFIG_DRM_PANEL_JDI_LPM102A188A) += panel-jdi-lpm102a188a.o
++obj-$(CONFIG_DRM_PANEL_JDI_NT35596S) += panel-jdi-nt35596s.o
+ obj-$(CONFIG_DRM_PANEL_JDI_R63452) += panel-jdi-fhd-r63452.o
+ obj-$(CONFIG_DRM_PANEL_KHADAS_TS050) += panel-khadas-ts050.o
+ obj-$(CONFIG_DRM_PANEL_KINGDISPLAY_KD097D04) += panel-kingdisplay-kd097d04.o
+--- a/drivers/gpu/drm/panel/panel-jdi-nt35596s.c	1970-01-01 08:00:00.000000000 +0800
++++ b/drivers/gpu/drm/panel/panel-jdi-nt35596s.c	2026-10-25 17:08:39.648566640 +0800
+@@ -0,0 +1,446 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Copyright (c) 2026 joesdu
++// Generated with linux-mdss-dsi-panel-driver-generator from vendor device tree:
++//   Copyright (c) 2013, The Linux Foundation. All rights reserved.
++
++#include <linux/delay.h>
++#include <linux/mod_devicetable.h>
++#include <linux/gpio/consumer.h>
++#include <linux/module.h>
++#include <linux/regulator/consumer.h>
++
++#include <video/mipi_display.h>
++
++#include <drm/drm_mipi_dsi.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_panel.h>
++#include <drm/drm_probe_helper.h>
++
++static bool handover = true;
++module_param(handover, bool, 0444);
++MODULE_PARM_DESC(handover, "Keep the panel as initialised by the bootloader on the first power up");
++
++static bool long_init = true;
++module_param(long_init, bool, 0644);
++MODULE_PARM_DESC(long_init, "Use the stock kernel DT init sequence instead of the XBL one");
++
++struct jdi_nt35596s {
++	struct drm_panel panel;
++	struct mipi_dsi_device *dsi;
++	struct regulator_bulk_data *supplies;
++	struct gpio_desc *reset_gpio;
++	bool handover;
++	bool powered;
++};
++
++static const struct regulator_bulk_data jdi_nt35596s_supplies[] = {
++	{ .supply = "vddio" },
++	{ .supply = "vsp" },
++	{ .supply = "vsn" },
++};
++
++static inline struct jdi_nt35596s *to_jdi_nt35596s(struct drm_panel *panel)
++{
++	return container_of_const(panel, struct jdi_nt35596s, panel);
++}
++
++static void jdi_nt35596s_reset(struct jdi_nt35596s *ctx)
++{
++	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
++	usleep_range(10000, 11000);
++	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
++	usleep_range(10000, 11000);
++}
++
++/*
++ * The init sequence of the XBL panel config (JDI_NT35596S_FHD), which leaves
++ * the factory calibration of the panel alone.
++ */
++static int jdi_nt35596s_on_short(struct jdi_nt35596s *ctx)
++{
++	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
++
++	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x24);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x9d, 0x34);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc4, 0x25);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd1, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd2, 0x84);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x10);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_TEAR_ON, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY, 0x24);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_POWER_SAVE, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x00);
++	mipi_dsi_msleep(&dsi_ctx, 40);
++	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 120);
++	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 20);
++
++	return dsi_ctx.accum_err;
++}
++
++/* The on-command of the stock kernel DT, which Android sends on resume */
++static int jdi_nt35596s_on_long(struct jdi_nt35596s *ctx)
++{
++	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
++
++	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x24);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x9d, 0x34);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc4, 0x25);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd1, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd2, 0x84);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x26);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x03, 0x1c);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x3b, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x6b, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x97, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc5, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x23);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x01, 0x84);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x05, 0x2d);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x06, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x33, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x21, 0xee);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x22, 0xed);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x23, 0xea);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x24, 0xe8);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x25, 0xe5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_GAMMA_CURVE, 0xe2);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x27, 0xde);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x28, 0xbb);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x29, 0x87);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x2a, 0x77);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x32, 0x0c);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x13, 0x3f);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x14, 0x34);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x15, 0x2a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x16, 0x25);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x17, 0x9d);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x18, 0x9a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x19, 0x97);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1a, 0x94);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1b, 0x91);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1c, 0x8e);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1d, 0x8b);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1e, 0x89);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1f, 0x86);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x20, 0x83);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x22);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x00, 0x0a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x01, 0x43);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x02, 0x5b);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x03, 0x6a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x04, 0x7a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x05, 0x82);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x06, 0x85);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x07, 0x80);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x08, 0x7c);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x09, 0x7c);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x0a, 0x74);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x0b, 0x71);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x0c, 0x6e);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x0d, 0x68);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x0e, 0x65);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x0f, 0x5c);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x10, 0x32);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x11, 0x18);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x12, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x13, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1a, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1b, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1c, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1d, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1e, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1f, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x20, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x21, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x22, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x23, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x24, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x25, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_GAMMA_CURVE, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x27, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x28, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x29, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x2a, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x2b, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x2f, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_PARTIAL_ROWS, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_PARTIAL_COLUMNS,
++				     0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x32, 0x0c);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x33, 0x0c);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x34, 0x0c);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x35, 0x0b);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_ADDRESS_MODE, 0x09);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x37, 0x09);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x38, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x39, 0x05);
++	mipi_dsi_dcs_set_pixel_format_multi(&dsi_ctx, 0x03);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x3b, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x3f, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_VSYNC_TIMING, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x41, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x42, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x43, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x44, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_GET_SCANLINE, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x46, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x47, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x48, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x49, 0x03);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x4a, 0x06);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x4b, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x4c, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x4d, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x4e, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x4f, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x50, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x52, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY,
++				     0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x54, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_POWER_SAVE, 0x89);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x56, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x58, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x68, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x84, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x85, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x86, 0x03);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x87, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x88, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_READ_PPS_START, 0x20);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_READ_PPS_CONTINUE,
++				     0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xaa, 0x12);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xab, 0x13);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xac, 0x0a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xad, 0x74);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xaf, 0x33);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x03);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb1, 0x14);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb2, 0x42);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb3, 0x40);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb4, 0xa5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb6, 0x44);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb7, 0x04);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb8, 0x14);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb9, 0x42);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xba, 0x40);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xbb, 0xa5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xbd, 0x44);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xbe, 0x04);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xbf, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0, 0x75);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x6a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc2, 0xa5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc4, 0x22);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc5, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc6, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc7, 0x95);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc8, 0x8a);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc9, 0xa5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xcb, 0x22);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xcc, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xcd, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xce, 0xb5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xcf, 0xaa);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd0, 0xa5);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd2, 0x22);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xd3, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x10);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_GAMMA_CURVE, 0x02);
++	mipi_dsi_dcs_set_tear_on_multi(&dsi_ctx, MIPI_DSI_DCS_TEAR_MODE_VBLANK);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_DISPLAY_BRIGHTNESS, 0xff);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY,
++				     0x24);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_POWER_SAVE, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0x00);
++	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 80);
++	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 20);
++
++	return dsi_ctx.accum_err;
++}
++
++static int jdi_nt35596s_prepare(struct drm_panel *panel)
++{
++	struct jdi_nt35596s *ctx = to_jdi_nt35596s(panel);
++	struct device *dev = &ctx->dsi->dev;
++	int ret;
++
++	/*
++	 * The rails stay up once enabled, like on the stock kernel where the
++	 * touch driver holds the display supplies; every later power up only
++	 * resets and initialises the panel again.
++	 */
++	if (!ctx->powered) {
++		ret = regulator_bulk_enable(ARRAY_SIZE(jdi_nt35596s_supplies),
++					    ctx->supplies);
++		if (ret < 0) {
++			dev_err(dev, "Failed to enable regulators: %d\n", ret);
++			return ret;
++		}
++		ctx->powered = true;
++
++		/*
++		 * The bootloader brought the panel up (and the in-cell touch
++		 * controller synced to it): keep that state.
++		 */
++		if (ctx->handover) {
++			ctx->handover = false;
++			return 0;
++		}
++	}
++
++	jdi_nt35596s_reset(ctx);
++
++	ret = long_init ? jdi_nt35596s_on_long(ctx) : jdi_nt35596s_on_short(ctx);
++	if (ret < 0) {
++		dev_err(dev, "Failed to initialize panel: %d\n", ret);
++		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
++		return ret;
++	}
++
++	return 0;
++}
++
++/*
++ * There is no disable/unprepare: once this panel has been sent display off
++ * and sleep in, neither a reset nor the init sequence brings it back (it
++ * stops answering on the DSI link). It stays awake with the backlight off
++ * and gets reset and initialised again on the next prepare.
++ */
++
++/*
++ * Timings as the bootloader programs the DSI controller (read back from its
++ * registers; the porches in the XBL panel XML are not the ones it uses).
++ */
++static const struct drm_display_mode jdi_nt35596s_mode = {
++	.clock = (1080 + 16 + 28 + 40) * (2160 + 7 + 4 + 24) * 60 / 1000,
++	.hdisplay = 1080,
++	.hsync_start = 1080 + 16,
++	.hsync_end = 1080 + 16 + 28,
++	.htotal = 1080 + 16 + 28 + 40,
++	.vdisplay = 2160,
++	.vsync_start = 2160 + 7,
++	.vsync_end = 2160 + 7 + 4,
++	.vtotal = 2160 + 7 + 4 + 24,
++	.width_mm = 68,
++	.height_mm = 136,
++	.type = DRM_MODE_TYPE_DRIVER,
++};
++
++static int jdi_nt35596s_get_modes(struct drm_panel *panel,
++				  struct drm_connector *connector)
++{
++	return drm_connector_helper_get_modes_fixed(connector, &jdi_nt35596s_mode);
++}
++
++static const struct drm_panel_funcs jdi_nt35596s_panel_funcs = {
++	.prepare = jdi_nt35596s_prepare,
++	.get_modes = jdi_nt35596s_get_modes,
++};
++
++static int jdi_nt35596s_probe(struct mipi_dsi_device *dsi)
++{
++	struct device *dev = &dsi->dev;
++	struct jdi_nt35596s *ctx;
++	int ret;
++
++	ctx = devm_drm_panel_alloc(dev, struct jdi_nt35596s, panel,
++				   &jdi_nt35596s_panel_funcs,
++				   DRM_MODE_CONNECTOR_DSI);
++	if (IS_ERR(ctx))
++		return PTR_ERR(ctx);
++
++	ret = devm_regulator_bulk_get_const(dev,
++					    ARRAY_SIZE(jdi_nt35596s_supplies),
++					    jdi_nt35596s_supplies,
++					    &ctx->supplies);
++	if (ret < 0)
++		return ret;
++
++	ctx->handover = handover;
++	ctx->reset_gpio = devm_gpiod_get(dev, "reset", ctx->handover ?
++					 GPIOD_OUT_LOW : GPIOD_OUT_HIGH);
++	if (IS_ERR(ctx->reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
++				     "Failed to get reset-gpios\n");
++
++	ctx->dsi = dsi;
++	mipi_dsi_set_drvdata(dsi, ctx);
++
++	dsi->lanes = 4;
++	dsi->format = MIPI_DSI_FMT_RGB888;
++	/*
++	 * Non-burst with sync events and no HSE, as the bootloader runs it (the
++	 * stock DT says burst + HSE). The in-cell touch is synced to the line
++	 * timing: in burst mode it misreports X and the picture degrades.
++	 */
++	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS;
++
++	ctx->panel.prepare_prev_first = true;
++
++	ret = drm_panel_of_backlight(&ctx->panel);
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to get backlight\n");
++
++	drm_panel_add(&ctx->panel);
++
++	ret = mipi_dsi_attach(dsi);
++	if (ret < 0) {
++		drm_panel_remove(&ctx->panel);
++		return dev_err_probe(dev, ret, "Failed to attach to DSI host\n");
++	}
++
++	return 0;
++}
++
++static void jdi_nt35596s_remove(struct mipi_dsi_device *dsi)
++{
++	struct jdi_nt35596s *ctx = mipi_dsi_get_drvdata(dsi);
++	int ret;
++
++	ret = mipi_dsi_detach(dsi);
++	if (ret < 0)
++		dev_err(&dsi->dev, "Failed to detach from DSI host: %d\n", ret);
++
++	drm_panel_remove(&ctx->panel);
++
++	if (ctx->powered)
++		regulator_bulk_disable(ARRAY_SIZE(jdi_nt35596s_supplies), ctx->supplies);
++}
++
++static const struct of_device_id jdi_nt35596s_of_match[] = {
++	{ .compatible = "xiaomi,chiron-jdi-nt35596s" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, jdi_nt35596s_of_match);
++
++static struct mipi_dsi_driver jdi_nt35596s_driver = {
++	.probe = jdi_nt35596s_probe,
++	.remove = jdi_nt35596s_remove,
++	.driver = {
++		.name = "panel-jdi-nt35596s",
++		.of_match_table = jdi_nt35596s_of_match,
++	},
++};
++module_mipi_dsi_driver(jdi_nt35596s_driver);
++
++MODULE_AUTHOR("generated by linux-mdss-dsi-panel-driver-generator");
++MODULE_DESCRIPTION("DRM driver for the JDI NT35596S panel of the Xiaomi Mi MIX 2");
++MODULE_LICENSE("GPL");

@@ -1,0 +1,11 @@
+[Unit]
+Description=USB network gadget for the connected computer
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mix2-usb-gadget
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,66 @@
+--- a/storage.c
++++ b/storage.c
+@@ -12,6 +12,7 @@
+ #define STORAGE_MAX_SIZE (16 * 1024 * 1024)
+ 
+ #define BY_PARTLABEL_PATH "/dev/disk/by-partlabel"
++#define RMTFS_FILE_DIR "/var/lib/rmtfs"
+ 
+ #define MIN(x, y) ((x) < (y) ? (x) : (y))
+ 
+@@ -19,6 +20,8 @@
+ 	const char *path;
+ 	const char *actual;
+ 	const char *partlabel;
++	/* No partition of its own: backed by a file in RMTFS_FILE_DIR */
++	int file_backed;
+ };
+ 
+ struct rmtfd {
+@@ -43,6 +46,13 @@
+ 	{ "/boot/modem_fsg", "modem_fsg", "fsg" },
+ 	{ "/boot/modem_tunning", "modem_tunning", "tunning" },
+ 	{ "/boot/modem_tng", "modem_tng", "tunning" },
++	/*
++	 * Requested on every boot by MSM8998 modem firmware (Xiaomi chiron,
++	 * Google wahoo) although no such partition exists. Rejecting them
++	 * makes the modem take a fatal error a fixed time after boot.
++	 */
++	{ "/boot/modem_fsg_oem_1", "modem_fsg_oem_1", NULL, 1 },
++	{ "/boot/modem_fsg_oem_2", "modem_fsg_oem_2", NULL, 1 },
+ 	{}
+ };
+ 
+@@ -80,6 +90,7 @@
+ 	const struct partition *part;
+ 	struct rmtfd *rmtfd = NULL;
+ 	const char *file;
++	const char *dir;
+ 	size_t pathlen;
+ 	int saved_errno;
+ 	int ret;
+@@ -114,14 +125,20 @@
+ 		return NULL;
+ 	}
+ 
+-	if (storage_use_partitions)
++	if (part->file_backed) {
++		dir = RMTFS_FILE_DIR;
++		file = part->actual;
++	} else if (storage_use_partitions) {
++		dir = storage_dir;
+ 		file = part->partlabel;
+-	else
++	} else {
++		dir = storage_dir;
+ 		file = part->actual;
++	}
+ 
+-	pathlen = strlen(storage_dir) + strlen(file) + 2;
++	pathlen = strlen(dir) + strlen(file) + 2;
+ 	fspath = alloca(pathlen);
+-	snprintf(fspath, pathlen, "%s/%s", storage_dir, file);
++	snprintf(fspath, pathlen, "%s/%s", dir, file);
+ 	if (!storage_read_only) {
+ 		fd = open(fspath, O_RDWR);
+ 		if (fd < 0) {

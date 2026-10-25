@@ -1,0 +1,166 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] Input: rmi4 - i2c: follow the panel of in-cell touchscreens
+
+The Synaptics S3330 of the Xiaomi Mi MIX 2 sits in an in-cell JDI panel.
+Once the panel has been reset and initialised again the controller stops
+scanning (no more interrupts), and the panel only comes back if the
+controller keeps running while it is initialised. The vendor kernel
+restarts the touch controller after every panel power up.
+
+Register as a DRM panel follower when the node has a "panel" phandle,
+wait for the panel at probe, and power cycle the sensor (which pulses its
+reset line) after each panel prepare. It is left running while the panel
+is off.
+---
+--- a/drivers/input/rmi4/rmi_i2c.c	2026-10-25 17:33:55.855263758 +0800
++++ b/drivers/input/rmi4/rmi_i2c.c	2026-10-25 17:33:55.857493598 +0800
+@@ -9,6 +9,7 @@
+ #include <linux/of.h>
+ #include <linux/delay.h>
+ #include <linux/regulator/consumer.h>
++#include <drm/drm_panel.h>
+ #include "rmi_driver.h"
+ 
+ #define BUFFER_SIZE_INCREMENT 32
+@@ -27,6 +28,10 @@
+  *
+  * @supplies: Array of voltage regulators
+  * @startup_delay: Milliseconds to pause after powering up the regulators
++ *
++ * @panel_follower: Follows the panel of an in-cell touchscreen
++ * @panel_follower_work: Power cycles the sensor after the panel came up
++ * @powered: The supplies are enabled
+  */
+ struct rmi_i2c_xport {
+ 	struct rmi_transport_dev xport;
+@@ -40,6 +45,10 @@
+ 
+ 	struct regulator_bulk_data supplies[2];
+ 	u32 startup_delay;
++
++	struct drm_panel_follower panel_follower;
++	struct work_struct panel_follower_work;
++	bool powered;
+ };
+ 
+ #define RMI_PAGE_SELECT_REGISTER 0xff
+@@ -198,6 +207,85 @@
+ 	rmi_unregister_transport_device(&rmi_i2c->xport);
+ }
+ 
++static int rmi_i2c_runtime_suspend(struct device *dev);
++static int rmi_i2c_runtime_resume(struct device *dev);
++
++/*
++ * The controller of an in-cell touchscreen loses its state whenever the
++ * panel is reset and initialised, and it only scans properly when it starts
++ * after the display. Power cycle it, which also pulses its reset line, each
++ * time the panel has been prepared; the F01 reset handling then reconfigures
++ * it.
++ */
++static void rmi_i2c_panel_follower_work(struct work_struct *work)
++{
++	struct rmi_i2c_xport *rmi_i2c =
++		container_of(work, struct rmi_i2c_xport, panel_follower_work);
++	struct device *dev = &rmi_i2c->client->dev;
++
++	if (rmi_i2c->powered)
++		rmi_i2c_runtime_suspend(dev);
++	rmi_i2c->powered = !rmi_i2c_runtime_resume(dev);
++}
++
++static int rmi_i2c_panel_prepared(struct drm_panel_follower *follower)
++{
++	struct rmi_i2c_xport *rmi_i2c =
++		container_of(follower, struct rmi_i2c_xport, panel_follower);
++
++	/* Starting the sensor is slow, don't hold up the panel */
++	schedule_work(&rmi_i2c->panel_follower_work);
++
++	return 0;
++}
++
++/*
++ * The controller is left running while the panel is off: the panel needs
++ * it up while it is being initialised again, or it stays dark.
++ */
++static int rmi_i2c_panel_unpreparing(struct drm_panel_follower *follower)
++{
++	struct rmi_i2c_xport *rmi_i2c =
++		container_of(follower, struct rmi_i2c_xport, panel_follower);
++
++	cancel_work_sync(&rmi_i2c->panel_follower_work);
++
++	return 0;
++}
++
++static const struct drm_panel_follower_funcs rmi_i2c_panel_follower_funcs = {
++	.panel_prepared = rmi_i2c_panel_prepared,
++	.panel_unpreparing = rmi_i2c_panel_unpreparing,
++};
++
++static void rmi_i2c_panel_follower_cleanup(void *data)
++{
++	struct rmi_i2c_xport *rmi_i2c = data;
++
++	cancel_work_sync(&rmi_i2c->panel_follower_work);
++	/* Balance the regulator disable done on removal */
++	if (!rmi_i2c->powered)
++		regulator_bulk_enable(ARRAY_SIZE(rmi_i2c->supplies),
++				      rmi_i2c->supplies);
++}
++
++static int rmi_i2c_register_panel_follower(struct rmi_i2c_xport *rmi_i2c)
++{
++	struct device *dev = &rmi_i2c->client->dev;
++	int error;
++
++	rmi_i2c->powered = true;
++	INIT_WORK(&rmi_i2c->panel_follower_work, rmi_i2c_panel_follower_work);
++	error = devm_add_action_or_reset(dev, rmi_i2c_panel_follower_cleanup,
++					 rmi_i2c);
++	if (error)
++		return error;
++
++	rmi_i2c->panel_follower.funcs = &rmi_i2c_panel_follower_funcs;
++
++	return devm_drm_panel_add_follower(dev, &rmi_i2c->panel_follower);
++}
++
+ static int rmi_i2c_probe(struct i2c_client *client)
+ {
+ 	struct rmi_device_platform_data *pdata;
+@@ -221,6 +309,19 @@
+ 	rmi_dbg(RMI_DEBUG_XPORT, &client->dev, "Probing %s.\n",
+ 			dev_name(&client->dev));
+ 
++	if (drm_is_panel_follower(&client->dev)) {
++		struct device_node *np;
++		struct drm_panel *panel;
++
++		/* Don't bring the sensor up before the panel driver is there */
++		np = of_parse_phandle(client->dev.of_node, "panel", 0);
++		panel = of_drm_find_panel(np);
++		of_node_put(np);
++		if (IS_ERR(panel))
++			return dev_err_probe(&client->dev, PTR_ERR(panel),
++					     "waiting for the panel\n");
++	}
++
+ 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
+ 		dev_err(&client->dev,
+ 			"adapter does not support required functionality\n");
+@@ -284,6 +385,13 @@
+ 	if (error)
+ 		return error;
+ 
++	if (drm_is_panel_follower(&client->dev)) {
++		error = rmi_i2c_register_panel_follower(rmi_i2c);
++		if (error)
++			return dev_err_probe(&client->dev, error,
++					     "failed to follow the panel\n");
++	}
++
+ 	return 0;
+ }
+ 

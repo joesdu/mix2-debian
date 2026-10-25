@@ -1,0 +1,63 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] drm/msm/dsi: phy: 10nm: allow fixed D-PHY timings from DT
+
+The in-cell touch of the Xiaomi Mi MIX 2 JDI panel is synced to the HS/LP
+transitions on the DSI link. With the timings msm_dsi_dphy_timing_calc_v3()
+computes (much longer HS exit/zero than the bootloader uses) the touch
+controller reports X positions about 160 px off; with the bootloader's
+values, read back from the PHY, it is accurate.
+
+Add qcom,phy-timing (TIMING_CTRL_0..11) and qcom,phy-clk-pre-post to
+override the computed values, like the downstream panel timing properties.
+---
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c	2026-10-25 15:54:35.822792833 +0800
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_10nm.c	2026-10-25 15:54:35.846597119 +0800
+@@ -786,6 +786,39 @@
+ 	}
+ }
+ 
++/*
++ * Panels whose in-cell touch is synced to the DSI HS/LP transitions only
++ * behave with the exact timings the bootloader programs: let DT give them,
++ * in TIMING_CTRL_0..11 order, plus T_CLK_PRE/T_CLK_POST.
++ */
++static void dsi_10nm_phy_timing_override(struct msm_dsi_phy *phy,
++					 struct msm_dsi_dphy_timing *timing)
++{
++	struct device_node *np = phy->pdev->dev.of_node;
++	u8 t[12], clk[2];
++
++	if (!of_property_read_u8_array(np, "qcom,phy-timing", t, ARRAY_SIZE(t))) {
++		timing->hs_halfbyte_en = t[0];
++		timing->clk_zero = t[1];
++		timing->clk_prepare = t[2];
++		timing->clk_trail = t[3];
++		timing->hs_exit = t[4];
++		timing->hs_zero = t[5];
++		timing->hs_prepare = t[6];
++		timing->hs_trail = t[7];
++		timing->hs_rqst = t[8];
++		timing->ta_go = t[9] & 0x7;
++		timing->ta_sure = t[9] >> 3;
++		timing->ta_get = t[10];
++	}
++
++	if (!of_property_read_u8_array(np, "qcom,phy-clk-pre-post", clk, ARRAY_SIZE(clk))) {
++		timing->shared_timings.clk_pre = clk[0];
++		timing->shared_timings.clk_post = clk[1];
++		timing->shared_timings.clk_pre_inc_by_2 = false;
++	}
++}
++
+ static int dsi_10nm_phy_enable(struct msm_dsi_phy *phy,
+ 			       struct msm_dsi_phy_clk_request *clk_req)
+ {
+@@ -806,6 +839,8 @@
+ 		return -EINVAL;
+ 	}
+ 
++	dsi_10nm_phy_timing_override(phy, timing);
++
+ 	if (dsi_phy_hw_v3_0_is_pll_on(phy))
+ 		pr_warn("PLL turned on before configuring PHY\n");
+ 

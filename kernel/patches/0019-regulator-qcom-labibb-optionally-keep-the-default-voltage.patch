@@ -1,0 +1,36 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] regulator: qcom-labibb: optionally keep the PMIC default voltage
+
+On LCD phones the downstream driver (qcom,qpnp-{lab,ibb}-use-default-voltage)
+clears the voltage override bit, so LAB and IBB run at the output voltage
+the PMIC is configured for, and the display driver never sets a voltage.
+Add a qcom,use-default-voltage property that does the same at probe time,
+so the Xiaomi Mi MIX 2 JDI panel keeps the bias it runs at from the
+bootloader instead of a guessed override voltage.
+---
+ drivers/regulator/qcom-labibb-regulator.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+--- a/drivers/regulator/qcom-labibb-regulator.c
++++ b/drivers/regulator/qcom-labibb-regulator.c
+@@ -831,6 +831,20 @@ static int qcom_labibb_regulator_probe(struct platform_device *pdev)
+ 		irq = of_irq_get_byname(reg_node, "ocp");
+ 		vreg->ocp_irq = irq;
+ 		vreg->ocp_irq_count = 0;
++
++		/*
++		 * Run at the PMIC's default output voltage like downstream does;
++		 * the voltage read back afterwards is meaningless.
++		 */
++		if (of_property_read_bool(reg_node, "qcom,use-default-voltage")) {
++			ret = regmap_update_bits(reg_regmap, reg_data->desc->vsel_reg,
++						 reg_data->desc->vsel_mask |
++						 LABIBB_VOLTAGE_OVERRIDE_EN, 0);
++			if (ret < 0) {
++				of_node_put(reg_node);
++				return ret;
++			}
++		}
+ 		of_node_put(reg_node);
+ 
+ 		vreg->regmap = reg_regmap;

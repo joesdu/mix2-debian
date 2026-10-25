@@ -1,0 +1,37 @@
+#!/bin/sh
+# Rebuild the Android boot image from /boot/mix2 and write it to the boot partition.
+# usage: sudo mix2-flash-boot [--dry-run]
+#
+# /boot/mix2 holds Image.gz, msm8998-xiaomi-chiron.dtb and initramfs.cpio.gz.
+# The previous boot partition content is kept in /boot/mix2/boot.img.prev.
+set -e
+
+D=/boot/mix2
+CMDLINE_FILE=$D/cmdline
+CMDLINE="clk_ignore_unused pd_ignore_unused arm-smmu.disable_bypass=0 console=tty0 fbcon=font:TER16x32 quiet loglevel=4 modprobe.blacklist=ipa"
+[ -f "$CMDLINE_FILE" ] && CMDLINE=$(cat "$CMDLINE_FILE")
+
+BOOT=$(for u in /sys/class/block/*/uevent; do
+	grep -qx "PARTNAME=boot" "$u" && sed -n 's/^DEVNAME=//p' "$u"
+done | head -1)
+[ -n "$BOOT" ] || { echo "boot partition not found" >&2; exit 1; }
+BOOT=/dev/$BOOT
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+cat "$D/Image.gz" "$D/msm8998-xiaomi-chiron.dtb" > "$TMP/Image.gz-dtb"
+mkbootimg --kernel "$TMP/Image.gz-dtb" --ramdisk "$D/initramfs.cpio.gz" \
+	--cmdline "$CMDLINE" --base 0x00000000 --kernel_offset 0x00008000 \
+	--ramdisk_offset 0x01000000 --tags_offset 0x00000100 --pagesize 4096 \
+	--header_version 0 --output "$TMP/boot.img"
+
+SIZE=$(stat -c %s "$TMP/boot.img")
+PART=$(blockdev --getsize64 "$BOOT")
+[ "$SIZE" -le "$PART" ] || { echo "boot.img ($SIZE) larger than $BOOT ($PART)" >&2; exit 1; }
+echo "boot.img: $SIZE bytes -> $BOOT"
+[ "$1" = "--dry-run" ] && exit 0
+
+dd if="$BOOT" of="$D/boot.img.prev" bs=1M status=none
+dd if="$TMP/boot.img" of="$BOOT" bs=1M conv=fsync status=none
+sync
+echo "boot partition updated"

@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Per-phone Wi-Fi and Bluetooth addresses. Copy this file to kernel/local.dtsi
+ * (it is not tracked by git) and put in your phone's factory addresses:
+ * build_kernel.sh appends it to the chiron device tree when it exists.
+ *
+ * The addresses are in the persist partition (wlan_bt/wlan.mac and
+ * wlan_bt/bt.mac), also shown by Android under Settings -> About phone ->
+ * Status. Without this file Bluetooth has no valid address and stays
+ * unconfigured, and Wi-Fi does not get the phone's own MAC.
+ */
+
+/* Bluetooth address AA:BB:CC:DD:EE:FF, least significant byte first */
+&bluetooth {
+	local-bd-address = [ ff ee dd cc bb aa ];
+};
+
+/* Wi-Fi MAC AA:BB:CC:DD:EE:F0, in normal order */
+&wifi {
+	local-mac-address = [ aa bb cc dd ee f0 ];
+};

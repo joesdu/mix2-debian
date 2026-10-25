@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=旋转屏幕
+Name[en]=Rotate screen
+Comment=在横屏和竖屏之间切换（快捷键 Super+O）
+Exec=mix2-rotate toggle
+Icon=object-rotate-right
+Categories=Settings;DesktopSettings;
+Terminal=false

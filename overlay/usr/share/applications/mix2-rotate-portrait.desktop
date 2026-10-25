@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=竖屏显示
+Name[en]=Rotate to portrait
+Comment=旋转屏幕和触摸方向
+Exec=mix2-rotate normal
+Icon=video-display
+Categories=Settings;DesktopSettings;
+Terminal=false

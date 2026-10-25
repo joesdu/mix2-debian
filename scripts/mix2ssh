@@ -1,0 +1,5 @@
+#!/bin/bash
+# Run a command on the phone's Debian. Uses USB networking (172.16.42.1) by
+# default; set MIX2_HOST=192.168.16.102 (the Wi-Fi address) when the USB port
+# is in host mode.
+exec ssh -i /g/crazymix2/keys/mix2_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 "mix2@${MIX2_HOST:-172.16.42.1}" "$@"

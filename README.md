@@ -16,11 +16,11 @@
 | Wi‑Fi | ✅ | WCN3990，2.4/5 GHz，支持 WPA2/WPA3 |
 | 蓝牙 | ✅ | 可连接蓝牙键盘、鼠标等 |
 | 电池电量 / 充电 | ✅ | 面板显示电量，USB 充电正常 |
-| 电源键、音量键、霍尔传感器 | ✅ | 电源键短按熄屏 / 亮屏，长按关机 |
+| 电源键、音量键、霍尔传感器 | ✅ | 电源键短按熄屏 / 亮屏，长按关机；音量键调节音量 |
 | USB 联网（接电脑） | ✅ | 手机 172.16.42.1，电脑自动获得 172.16.42.2 |
 | 存储 | ✅ | 根分区占满 userdata，约 52 GB |
 | CPU | ⚠️ | 8 核可用，但没有调频；大核停在低频，已让调度器优先用小核 |
-| 声音 | ❌ | 音频编解码器驱动尚未适配 |
+| 声音 | ⚠️ | 底部扬声器已能放出整首歌（ADSP → QUAT MI2S → TAS2559 功放）；目前用测试内核手动启动，听筒 / 耳机 / 录音尚不可用，见 [docs/audio-bringup.md](docs/audio-bringup.md) |
 | USB 外接设备（OTG） | ⚠️ | 顶部面板的 USB 按钮切换到主机模式（手机输出 5 V，可接 Hub、键盘、鼠标）；模式切换已验证，外接 Hub 待实测 |
 | 睡眠 / 待机 | ❌ | 已禁用（避免无法唤醒），不用时请关机 |
 | 重力感应自动旋转、摄像头、指纹、NFC、移动网络 | ❌ | 尚未支持 |
@@ -94,6 +94,9 @@ fastboot boot G:\crazymix2\images\boot-rescue.img
 | msm 接管后面板命令超时 | bootloader 的显示管线仍在运行 | 设备树给 MDSS 加上复位线 `MDSS_BCR` |
 | 触摸偏移、暗角、残影、闪烁 | in-cell 触摸和显示共用电极，要和 DSI 时序同步；原厂设备树写的 burst 模式和 msm 自己算的 D-PHY 时序都和 bootloader 实际用的不一样 | 读回 bootloader 的 DSI/PHY 寄存器，照抄时序、non-burst 模式和 D-PHY 参数（补丁 0021） |
 | 熄屏后再也亮不起来 | ① porthole 的 VCO 公式补丁在这台手机上是错的，PLL 超出规格；② mmcc 缺少 byte_intf 分频器，字节时钟被拉低一半；③ 背光 CABC 让 WLED 不停过压；④ 面板一旦收到睡眠命令就再也不响应；⑤ 面板初始化时触摸芯片必须在运行 | 撤回该补丁、补上分频器（补丁 0022）、关闭 CABC；熄屏时不让面板睡眠、触摸芯片保持运行，亮屏时重新初始化 |
+| 扬声器无声，DSP 收下音频却从不播放 | 机器驱动把 QUAT MI2S 配成“等外部时钟”，而 TAS2559 功放本身也是时钟从设备，没人产生 BCLK/WS | 改由 SoC 提供时钟（补丁 0028）；用 APR 报文跟踪定位 |
+| 扬声器声音很小 | 实验功放驱动把增益固定在最低档 0 | 改为参数，按原厂用 15；系统音量走 ALSA softvol，由音量键调节 |
+| 屏幕不显示、触摸和电源键熄屏失效、蓝牙反复崩溃 | 模块目录被换成另一次构建（同名 release），缺面板驱动且结构体不匹配 | 恢复与内核配套的原模块；每个测试内核使用独立的 release 名和完整模块目录 |
 
 Wi‑Fi、电量计等多项修复参考了 [porthole-dev/pmaports](https://github.com/porthole-dev/pmaports) 中对 Pixel 2（同为骁龙 835）的详细记录。
 
@@ -105,6 +108,7 @@ Wi‑Fi、电量计等多项修复参考了 [porthole-dev/pmaports](https://gith
 |---|---|---|
 | `kernel/patches/`、`kernel/patches-dropped/` | GPL-2.0（与所修改的 Linux 内核文件相同） | 对 Linux 内核的修改，部分补丁来自 [porthole-dev/pmaports](https://github.com/porthole-dev/pmaports)，保留了原作者署名 |
 | `kernel/msm8998-xiaomi-chiron.dts`、`kernel/local.dtsi.example` | BSD-3-Clause | 派生自上游内核的 `msm8998-xiaomi-sagit.dts` |
+| `kernel/tas2559/` | GPL-2.0 | TAS2559/TAS2560 功放驱动，移植自 LineageOS `android_kernel_xiaomi_msm8998`，保留 TI / 小米版权声明 |
 | `packages/rmtfs/` | BSD-3-Clause | [linux-msm/rmtfs](https://github.com/linux-msm/rmtfs) 及我们的补丁 |
 | `packages/diag/` | BSD-3-Clause | [linux-msm/diag](https://github.com/linux-msm/diag) |
 
@@ -114,7 +118,8 @@ Wi‑Fi、电量计等多项修复参考了 [porthole-dev/pmaports](https://gith
 
 | 路径 | 内容 |
 |---|---|
-| `kernel/` | MIX 2 设备树 `msm8998-xiaomi-chiron.dts`、本机 Wi‑Fi/蓝牙地址模板 `local.dtsi.example`、内核配置片段 `chiron.config`、`patches/`（`patches-dropped/` 里是试过但证明不适用的补丁及原因） |
+| `kernel/` | MIX 2 设备树 `msm8998-xiaomi-chiron.dts`、本机 Wi‑Fi/蓝牙地址模板 `local.dtsi.example`、内核配置片段 `chiron.config`、`patches/`（`patches-dropped/` 里是试过但证明不适用的补丁及原因）、`tas2559/`（扬声器功放模块和 QUAT 设备树片段） |
+| `docs/` | 操作手册、音频适配状态 `audio-bringup.md` |
 | `scripts/` | 构建、打包、刷机、救援相关脚本 |
 | `overlay/`、`skel/` | 拷进根文件系统的配置文件和桌面设置 |
 | `packages/` | 重新打包的 `rmtfs`、`qcom-diag`（diag-router） |

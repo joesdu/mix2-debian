@@ -1,0 +1,27 @@
+--- a/sound/soc/qcom/msm8998.c
++++ b/sound/soc/qcom/msm8998.c
+@@ -365,6 +365,9 @@
+ 					  SND_SOC_DAIFMT_I2S);
+ 		if (ret) {
+ 			dev_err(rtd->dev, "QUAT MI2S fmt err:%d\n", ret);
++			snd_soc_dai_set_sysclk(cpu_dai,
++				Q6AFE_LPASS_CLK_ID_QUAD_MI2S_IBIT,
++				0, SNDRV_PCM_STREAM_PLAYBACK);
+ 			return ret;
+ 		}
+ 		break;
+@@ -485,5 +488,14 @@
+ 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+
++	/* QUAT's fixed 1.536 MHz BCLK requires 48 kHz, stereo, 16-bit slots. */
++	if (cpu_dai->id == QUATERNARY_MI2S_RX) {
++		rate->min = rate->max = DEFAULT_SAMPLE_RATE_48K;
++		channels->min = channels->max = 2;
++		snd_mask_none(fmt);
++		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
++		return 0;
++	}
++
+ 	rate->min = rate->max = be_rate;
+ 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
+

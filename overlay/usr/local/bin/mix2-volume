@@ -1,0 +1,143 @@
+#!/usr/bin/python3
+"""Volume keys: change the software volume of the phone's sound card.
+
+usage: mix2-volume up|down|mute|init
+
+Playback through the ALSA default device goes through a softvol control
+"Master" (/etc/asound.conf). softvol would create that control at full volume
+on the first playback, so "init" (run by udev when the card appears, see
+/etc/udev/rules.d/90-mix2-volume.rules) creates it beforehand at the last
+saved level, or a quiet default.
+"""
+import ctypes
+import os
+import re
+import subprocess
+import sys
+
+CARD = "chironwcd9335"
+CONTROL = "Master"
+MAX = 255                 # softvol default resolution 256
+MIN_DB = -51.0            # min_dB in /etc/asound.conf, max_dB is 0
+DEFAULT = 105             # about -30 dB
+STEP = 13                 # about 5 %
+STATE = "/var/lib/mix2/volume"
+
+
+def amixer(*args):
+    return subprocess.run(["amixer", "-D", "hw:" + CARD, *args],
+                          capture_output=True, text=True)
+
+
+def get():
+    out = amixer("cget", "name=" + CONTROL)
+    if out.returncode != 0:
+        return None
+    m = re.search(r": values=(\d+)", out.stdout)
+    return int(m.group(1)) if m else None
+
+
+def set_level(value):
+    value = max(0, min(MAX, value))
+    amixer("cset", "name=" + CONTROL, "%d,%d" % (value, value))
+    return value
+
+
+def load():
+    try:
+        with open(STATE) as f:
+            return max(0, min(MAX, int(f.read().split()[0])))
+    except (OSError, ValueError, IndexError):
+        return DEFAULT
+
+
+def save(value, muted_from=None):
+    try:
+        fd = os.open(STATE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o664)
+        with os.fdopen(fd, "w") as f:
+            f.write("%d %d\n" % (value, muted_from or 0))
+    except OSError:
+        pass
+
+
+def muted_from():
+    try:
+        with open(STATE) as f:
+            return int(f.read().split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def create_control():
+    """Create "Master" the way softvol would (2 channels, 0..255, dB scale)."""
+    asound = ctypes.CDLL("libasound.so.2")
+    ctl = ctypes.c_void_p()
+    if asound.snd_ctl_open(ctypes.byref(ctl), ("hw:" + CARD).encode(), 0) < 0:
+        return False
+    elem = ctypes.c_void_p()
+    asound.snd_ctl_elem_id_malloc(ctypes.byref(elem))
+    asound.snd_ctl_elem_id_set_interface(elem, 2)  # SND_CTL_ELEM_IFACE_MIXER
+    asound.snd_ctl_elem_id_set_name(elem, CONTROL.encode())
+    ok = asound.snd_ctl_elem_add_integer(ctl, elem, 2, ctypes.c_long(0),
+                                         ctypes.c_long(MAX), ctypes.c_long(1)) >= 0
+    if ok:
+        # SNDRV_CTL_TLVT_DB_SCALE, 8 bytes, min in 0.01 dB, step | mute flag
+        step = int(-MIN_DB * 100 / MAX)
+        tlv = (ctypes.c_uint * 4)(1, 8, ctypes.c_uint(int(MIN_DB * 100)).value,
+                                  step | 0x10000)
+        asound.snd_ctl_elem_tlv_write(ctl, elem, tlv)
+    asound.snd_ctl_elem_id_free(elem)
+    asound.snd_ctl_close(ctl)
+    return ok
+
+
+def notify(text, value=None):
+    """Show the level, replacing the previous popup instead of stacking."""
+    idfile = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"),
+                          "mix2-volume.notify-id")
+    args = ["notify-send", "-p", "-t", "1200"]
+    try:
+        with open(idfile) as f:
+            args += ["-r", str(int(f.read()))]
+    except (OSError, ValueError):
+        pass
+    if value is not None:
+        args += ["-h", "int:value:%d" % value]
+    out = subprocess.run(args + ["音量", text], capture_output=True, text=True)
+    try:
+        with open(idfile, "w") as f:
+            f.write(out.stdout.strip())
+    except OSError:
+        pass
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "init":
+        if get() is None:
+            create_control()
+        set_level(load())
+        return 0
+    if cmd not in ("up", "down", "mute"):
+        print(__doc__.strip().splitlines()[2], file=sys.stderr)
+        return 1
+    value = get()
+    if value is None:
+        notify("声卡尚未就绪")
+        return 1
+    if cmd == "mute":
+        if value:
+            save(set_level(0), muted_from=value)
+            notify("静音", 0)
+            return 0
+        value = set_level(muted_from() or DEFAULT)
+    else:
+        value = set_level(value + (STEP if cmd == "up" else -STEP))
+    save(value)
+    percent = round(value * 100 / MAX)
+    notify("%d%%" % percent if value else "静音", percent)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

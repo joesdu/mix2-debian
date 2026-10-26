@@ -17,6 +17,9 @@
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/sound/qcom,q6afe.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
+#include <dt-bindings/sound/qcom,wcd9335.h>
 
 /*
  * Delete following upstream (msm8998.dtsi) reserved
@@ -39,6 +42,43 @@
 	/* Required for bootloader to select correct board */
 	qcom,msm-id = <292 0x20001>;
 	qcom,board-id = <32 0>;
+
+	/* Audio clock from PM8998 GPIO13, 9.6 MHz as on the stock board. */
+	divclk1_cdc: audio-mclk {
+		compatible = "gpio-gate-clock";
+		clocks = <&rpmcc RPM_SMD_DIV_CLK1>;
+		#clock-cells = <0>;
+		enable-gpios = <&pm8998_gpios 13 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&audio_mclk_pin>;
+	};
+
+	/* MSM8998 machine supports the WCD SLIMbus and separate MI2S backends. */
+	sound: sound {
+		compatible = "qcom,msm8998-sndcard";
+		model = "chiron-wcd9335";
+		audio-routing = "RX_BIAS", "MCLK";
+
+		mm1-dai-link {
+			link-name = "MultiMedia1";
+			cpu { sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>; };
+		};
+
+		slim-dai-link {
+			link-name = "SLIM Playback";
+			cpu { sound-dai = <&q6afedai SLIMBUS_6_RX>; };
+			platform { sound-dai = <&q6routing>; };
+			codec { sound-dai = <&wcd9335 AIF4_PB>; };
+		};
+
+		slimcap-dai-link {
+			link-name = "SLIM Capture";
+			cpu { sound-dai = <&q6afedai SLIMBUS_0_TX>; };
+			platform { sound-dai = <&q6routing>; };
+			codec { sound-dai = <&wcd9335 AIF1_CAP>; };
+		};
+	};
+
 
 	/* Lets mix2-usb-mode switch the OTG 5 V output (state: enabled/disabled) */
 	usb-vbus-output {
@@ -1020,4 +1060,85 @@
 	vdd-1.3-rfa-supply = <&vreg_l17a_1p3>;
 	vdd-3.3-ch0-supply = <&vreg_l25a_3p3>;
 	status = "okay";
+};
+
+&slimbam {
+	status = "okay";
+};
+
+&slim {
+	status = "okay";
+
+	slim@1 {
+		reg = <1>;
+		#address-cells = <2>;
+		#size-cells = <0>;
+
+		tasha_ifd: tas-ifd@0,0 {
+			compatible = "slim217,1a0";
+			reg = <0 0>;
+		};
+
+		wcd9335: codec@1,0 {
+			compatible = "slim217,1a0";
+			reg = <1 0>;
+			clock-names = "mclk", "slimbus";
+			clocks = <&divclk1_cdc>,
+				 <&q6afecc LPASS_CLK_ID_SPEAKER_I2S_OSR 0>;
+			interrupt-parent = <&tlmm>;
+			interrupts = <54 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "intr1";
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&cdc_reset_n_state &wcd_int_n_state>;
+			reset-gpios = <&tlmm 64 GPIO_ACTIVE_LOW>;
+			slim-ifc-dev = <&tasha_ifd>;
+			#sound-dai-cells = <1>;
+			vdd-buck-supply = <&vreg_s4a_1p8>;
+			vdd-buck-sido-supply = <&vreg_s4a_1p8>;
+			vdd-rx-supply = <&vreg_s4a_1p8>;
+			vdd-tx-supply = <&vreg_s4a_1p8>;
+			vdd-io-supply = <&vreg_s4a_1p8>;
+			vdd-vbat-supply = <&vph_pwr>;
+		};
+	};
+};
+
+&lpass_q6_smmu {
+	status = "okay";
+};
+
+&q6asmdai {
+	dai@0 { reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>; };
+	dai@1 { reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>; };
+};
+
+/* Keep APR's audio_pd readiness notifications from the stock service map. */
+&q6afe {
+	q6afecc: clock-controller {
+		compatible = "qcom,q6afe-clocks";
+		#clock-cells = <2>;
+	};
+};
+
+&blsp2_i2c4 {
+	status = "okay";
+
+	tas2559@4c {
+		compatible = "ti,tas2559";
+		reg = <0x4c>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <42 IRQ_TYPE_LEVEL_HIGH>;
+		reset-gpios = <&tlmm 41 GPIO_ACTIVE_HIGH>;
+		ti,tas2559-addr = <0x4c>;
+		ti,tas2560-addr = <0x4d>;
+		ti,tas2559-channel = <0>;
+		ti,tas2560-channel = <1>;
+		ti,tas2559-irq-gpio = <&tlmm 42 GPIO_ACTIVE_HIGH>;
+		ti,tas2560-irq-gpio = <&tlmm 11 GPIO_ACTIVE_HIGH>;
+		ti,bit-rate = <16>;
+		ti,echo-ref = <0>;
+		ti,ycrc-enable = <1>;
+	};
 };

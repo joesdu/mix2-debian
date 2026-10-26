@@ -47,10 +47,14 @@ def toggle_screen():
     user = desktop_user()
     if not user:
         return
-    if "Monitor is On" in xset(user, "q"):
-        xset(user, "dpms", "force", "off")
-    else:
+    # xfce4-power-manager keeps DPMS disabled (no idle blanking), and then
+    # xset q reports no monitor state at all: that means the screen is on.
+    # "dpms force" enables DPMS, so drop its idle timeouts first.
+    if "Monitor is Off" in xset(user, "q"):
         xset(user, "dpms", "force", "on")
+    else:
+        xset(user, "dpms", "0", "0", "0")
+        xset(user, "dpms", "force", "off")
 
 
 def main():

@@ -18,3 +18,18 @@
 # Build and test logs
 *.log
 __pycache__/
+
+# Out-of-tree build output of the TAS2559 speaker amplifier module
+/kernel/tas2559/*.o
+/kernel/tas2559/*.ko
+/kernel/tas2559/*.mod
+/kernel/tas2559/*.mod.c
+/kernel/tas2559/*.cmd
+/kernel/tas2559/Module.symvers
+/kernel/tas2559/modules.order
+# Superseded copy of the amplifier port (kernel/tas2559/ is authoritative)
+/kernel/tas2559-built-port/
+
+# Local session handoff notes (device serial, private file hashes)
+/docs/audio-handoff-*.md
+/docs/audio-next-session-prompt.txt

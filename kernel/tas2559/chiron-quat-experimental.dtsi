@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Experimental opt-in fragment, NOT included in the normal Chiron DTS.
+ * Requires a separately validated TAS playback component. The programming-only
+ * diagnostic publishes none: including this fragment with that driver would
+ * defer the whole sound card. Do not deploy it for the programming experiment.
+ */
+&tlmm {
+	chiron_quat_mi2s: chiron-quat-mi2s-state {
+		pins = "gpio58", "gpio59", "gpio60";
+		function = "qua_mi2s";
+		drive-strength = <8>;
+		bias-disable;
+	};
+};
+
+&blsp2_i2c4 {
+	chiron_tas: tas2559@4c {
+		#sound-dai-cells = <0>;
+	};
+};
+
+&q6afedai {
+	dai@16 {
+		reg = <QUATERNARY_MI2S_RX>;
+		/* Mainline takes line indices, not the stock driver's bitmask. */
+		qcom,sd-lines = <0>;
+	};
+};
+
+&sound {
+	pinctrl-names = "default";
+	pinctrl-0 = <&chiron_quat_mi2s>;
+
+	quat-mi2s-dai-link {
+		link-name = "Quaternary MI2S";
+		cpu { sound-dai = <&q6afedai QUATERNARY_MI2S_RX>; };
+		platform { sound-dai = <&q6routing>; };
+		codec { sound-dai = <&chiron_tas>; };
+	};
+};

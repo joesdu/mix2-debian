@@ -1,0 +1,34 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] ASoC: msm8998: SoC provides the QUAT MI2S clocks
+
+q6afe interprets the CPU DAI format from the DAI's own side, so CBC_CFC
+(== BC_FC) configured QUAT MI2S RX with an external word select. The TAS2559
+is a clock consumer as well: nothing clocked the port, the DSP accepted the
+stream but never completed a buffer (hw_ptr stayed 0). Use BP_FP on the CPU
+DAI and BC_FC on the codec DAI, like sdm845.
+---
+--- a/sound/soc/qcom/msm8998.c	2026-10-27 01:40:34.557496404 +0800
++++ b/sound/soc/qcom/msm8998.c	2026-10-27 01:40:34.586169160 +0800
+@@ -360,10 +360,21 @@
+ 			dev_err(rtd->dev, "QUAT MI2S bclk err:%d\n", ret);
+ 			return ret;
+ 		}
++		/*
++		 * q6afe reads the format from the CPU DAI's side (as sdm845
++		 * does): BP_FP makes the port drive BCLK/WS itself. CBC_CFC
++		 * (== BC_FC) set it to wait for external clocks, which the
++		 * TAS never provides, so the DSP never consumed any data.
++		 */
+ 		ret = snd_soc_dai_set_fmt(cpu_dai,
+-					  SND_SOC_DAIFMT_CBC_CFC |
++					  SND_SOC_DAIFMT_BP_FP |
+ 					  SND_SOC_DAIFMT_NB_NF |
+ 					  SND_SOC_DAIFMT_I2S);
++		if (!ret)
++			ret = snd_soc_dai_set_fmt(snd_soc_rtd_to_codec(rtd, 0),
++						  SND_SOC_DAIFMT_BC_FC |
++						  SND_SOC_DAIFMT_NB_NF |
++						  SND_SOC_DAIFMT_I2S);
+ 		if (ret) {
+ 			dev_err(rtd->dev, "QUAT MI2S fmt err:%d\n", ret);
+ 			snd_soc_dai_set_sysclk(cpu_dai,

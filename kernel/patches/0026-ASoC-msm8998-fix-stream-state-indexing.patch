@@ -1,0 +1,43 @@
+--- a/sound/soc/qcom/msm8998.c
++++ b/sound/soc/qcom/msm8998.c
+@@ -38,10 +38,10 @@
+ struct msm8998_snd_data {
+ 	struct snd_soc_jack jack;
+ 	bool jack_setup;
+-	bool stream_prepared[SLIM_MAX_RX_PORTS];
++	bool stream_prepared[AFE_PORT_MAX];
+ 	struct snd_soc_card *card;
+ 	uint32_t quat_tdm_clk_count;
+-	struct sdw_stream_runtime *sruntime[SLIM_MAX_RX_PORTS];
++	struct sdw_stream_runtime *sruntime[AFE_PORT_MAX];
+ };
+ 
+ static unsigned int tdm_slot_offset[8] = {0, 4, 8, 12, 16, 20, 24, 28};
+@@ -77,8 +77,12 @@
+ 	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+ 		sruntime = snd_soc_dai_get_stream(codec_dai,
+ 						      substream->stream);
+-		if (sruntime != ERR_PTR(-ENOTSUPP))
++		if (IS_ERR(sruntime)) {
++			if (PTR_ERR(sruntime) != -ENOTSUPP)
++				return PTR_ERR(sruntime);
++		} else {
+ 			pdata->sruntime[cpu_dai->id] = sruntime;
++		}
+ 
+ 		ret = snd_soc_dai_get_channel_map(codec_dai,
+ 				&tx_ch_cnt, tx_ch, &rx_ch_cnt, rx_ch);
+@@ -272,9 +276,11 @@
+ 			if (ret != 0 && ret != -ENOTSUPP)
+ 				return ret;
+ 
+-			snd_soc_dai_set_sysclk(codec_dai, 0,
++			ret = snd_soc_dai_set_sysclk(codec_dai, 0,
+ 					       WCD934X_DEFAULT_MCLK_RATE,
+-					       SNDRV_PCM_STREAM_PLAYBACK);
++					       SND_SOC_CLOCK_IN);
++			if (ret && ret != -ENOTSUPP)
++				return ret;
+ 
+ 			ret = snd_soc_component_set_jack(codec_dai->component,
+ 							  &pdata->jack, NULL);

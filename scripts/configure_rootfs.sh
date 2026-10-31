@@ -22,7 +22,7 @@ in_root apt-get update
 in_root apt-get install -y --no-install-recommends at-spi2-core \
 	xfce4-notifyd gnome-themes-extra elementary-xfce-icon-theme \
 	dosfstools xinput xserver-xorg-video-fbdev libglib2.0-bin dconf-cli libnotify-bin \
-	python3-evdev vlc
+	python3-evdev vlc lvm2 thin-provisioning-tools
 in_root apt-get clean
 
 # --- identity
@@ -190,7 +190,7 @@ EOF
 # rmtfs serves the modem's EFS partitions (modemst1/modemst2/fsg) like Android's rmt_storage
 in_root systemctl enable mix2-usb-gadget.service mix2-usb-dhcp.service mix2-growfs.service \
 	mix2-power-key.service mix2-usb-auto.service mix2-audio.service ssh.service \
-	mix2-touch-longpress.service \
+	mix2-touch-longpress.service mix2-lvm-udev.service \
 	NetworkManager.service lightdm.service zramswap.service
 for s in rmtfs tqftpserv pd-mapper; do in_root systemctl enable "$s.service" || true; done
 # The QRTR name service lives in the kernel since 5.7; the userspace one only conflicts

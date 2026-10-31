@@ -1,0 +1,145 @@
+#!/usr/bin/python3
+"""System snapshots for the desktop: list, take, roll back and delete
+snapshots of the system volume through mix2-snapshot (sudo, see
+/etc/sudoers.d/mix2-snapshot). /home is on the same volume: a rollback
+takes personal files back too."""
+import subprocess
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk  # noqa: E402
+
+TOOL = "/usr/local/sbin/mix2-snapshot"
+
+
+def run(*args):
+    p = subprocess.run(["sudo", "-n", TOOL, *args], capture_output=True, text=True)
+    return p.returncode, (p.stdout + p.stderr).strip()
+
+
+class Window(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="系统快照")
+        self.set_default_size(900, 700)
+        self.set_border_width(12)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.add(box)
+
+        info = Gtk.Label(xalign=0)
+        info.set_line_wrap(True)
+        info.set_text("快照保存整个系统,包括 /home 里的个人文件。"
+                      "每次 apt 安装或升级前会自动拍一个快照。回滚在下次开机时生效,"
+                      "所有文件(包括个人文件)都会回到拍快照时的状态。")
+        box.pack_start(info, False, False, 0)
+
+        self.usage = Gtk.Label(xalign=0)
+        box.pack_start(self.usage, False, False, 0)
+
+        self.store = Gtk.ListStore(str, str, str, str, str)
+        self.view = Gtk.TreeView(model=self.store)
+        for i, title in enumerate(["时间", "类型", "说明", "状态"]):
+            col = Gtk.TreeViewColumn(title, Gtk.CellRendererText(), text=i + 1)
+            col.set_resizable(True)
+            self.view.append_column(col)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        scroll.add(self.view)
+        box.pack_start(scroll, True, True, 0)
+
+        buttons = Gtk.Box(spacing=8)
+        for label, handler in (("新建快照", self.on_create), ("回滚到所选", self.on_rollback),
+                               ("删除所选", self.on_delete), ("刷新", lambda _b: self.refresh())):
+            b = Gtk.Button(label=label)
+            b.connect("clicked", handler)
+            buttons.pack_start(b, True, True, 0)
+        box.pack_start(buttons, False, False, 0)
+        self.refresh()
+
+    def message(self, text, kind=Gtk.MessageType.INFO, buttons=Gtk.ButtonsType.OK):
+        d = Gtk.MessageDialog(transient_for=self, message_type=kind, buttons=buttons, text=text)
+        r = d.run()
+        d.destroy()
+        return r
+
+    def refresh(self):
+        self.store.clear()
+        rc, out = run("list", "--tsv")
+        if rc:
+            self.usage.set_text("无法读取快照:" + out)
+            return
+        for line in out.splitlines():
+            name, kind, time, desc, merging = (line.split("\t") + [""] * 5)[:5]
+            self.store.append([name, time[:16], "自动" if kind == "auto" else "手动", desc,
+                               "下次开机回滚" if merging.strip() else ""])
+        rc, out = run("usage")
+        if not rc and out:
+            data, meta = out.split()[:2]
+            self.usage.set_text("存储池已用 %s%%(元数据 %s%%)" % (data, meta))
+
+    def selected(self):
+        model, it = self.view.get_selection().get_selected()
+        if it is None:
+            self.message("请先在列表里选中一个快照。")
+            return None
+        return model[it][0], model[it][1]
+
+    def on_create(self, _button):
+        d = Gtk.Dialog(title="新建快照", transient_for=self)
+        d.add_buttons("取消", Gtk.ResponseType.CANCEL, "创建", Gtk.ResponseType.OK)
+        entry = Gtk.Entry(placeholder_text="说明(可不填)")
+        entry.set_activates_default(True)
+        d.set_default_response(Gtk.ResponseType.OK)
+        d.get_content_area().pack_start(entry, True, True, 8)
+        d.show_all()
+        r = d.run()
+        text = entry.get_text()
+        d.destroy()
+        if r != Gtk.ResponseType.OK:
+            return
+        rc, out = run("create", text)
+        if rc:
+            self.message("创建失败:\n" + out, Gtk.MessageType.ERROR)
+        self.refresh()
+
+    def on_rollback(self, _button):
+        sel = self.selected()
+        if not sel:
+            return
+        name, time = sel
+        if self.message("把系统回滚到 %s 的快照?\n\n所有文件都会回到那时的状态,包括 /home "
+                        "里的个人文件:之后新建或改过的文件会丢失,请先把要留的文件拷走。"
+                        "重启后生效,这个快照会被用掉。" % time,
+                        Gtk.MessageType.WARNING, Gtk.ButtonsType.OK_CANCEL) != Gtk.ResponseType.OK:
+            return
+        rc, out = run("rollback", name)
+        if rc:
+            self.message("回滚失败:\n" + out, Gtk.MessageType.ERROR)
+        elif self.message("已安排好,下次开机时回滚。现在重启吗?", Gtk.MessageType.QUESTION,
+                          Gtk.ButtonsType.YES_NO) == Gtk.ResponseType.YES:
+            subprocess.run(["systemctl", "reboot"])
+        self.refresh()
+
+    def on_delete(self, _button):
+        sel = self.selected()
+        if not sel:
+            return
+        name, time = sel
+        if self.message("删除 %s 的快照?" % time, Gtk.MessageType.QUESTION,
+                        Gtk.ButtonsType.OK_CANCEL) != Gtk.ResponseType.OK:
+            return
+        rc, out = run("delete", name)
+        if rc:
+            self.message("删除失败:\n" + out, Gtk.MessageType.ERROR)
+        self.refresh()
+
+
+def main():
+    w = Window()
+    w.connect("destroy", Gtk.main_quit)
+    w.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

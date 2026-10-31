@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=System Snapshots
+Name[zh_CN]=系统快照
+Comment=Take, roll back and delete snapshots of the system volume
+Comment[zh_CN]=拍摄、回滚和删除系统快照
+Exec=/usr/local/bin/mix2-snapshot-gui
+Icon=document-revert
+Terminal=false
+Categories=System;Settings;

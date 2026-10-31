@@ -1,5 +1,5 @@
 [Unit]
-Description=Switch the USB-C port to host mode for powered hubs and docks
+Description=Switch the USB-C port between device and host mode by what is plugged in
 After=mix2-usb-gadget.service
 
 [Service]

@@ -1,0 +1,12 @@
+[Unit]
+Description=Touchscreen taps as mouse clicks, long press as right click
+After=systemd-udevd.service systemd-modules-load.service
+
+[Service]
+ExecStartPre=-/usr/sbin/modprobe uinput
+ExecStart=/usr/local/sbin/mix2-touch-longpress
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

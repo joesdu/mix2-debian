@@ -34,6 +34,11 @@ else
 	rm -f "$LOCAL"
 	echo "note: no kernel/local.dtsi, Wi-Fi/Bluetooth get no factory address"
 fi
+# Speaker link (QUAT MI2S -> TAS2559/TAS2560). The sound card waits for the
+# amplifier module (kernel/tas2559, built below, loaded by mix2-audio.service)
+sed 's/\r$//' "$WIN/kernel/tas2559/chiron-quat-experimental.dtsi" \
+	> arch/arm64/boot/dts/qcom/msm8998-xiaomi-chiron-quat.dtsi
+echo '#include "msm8998-xiaomi-chiron-quat.dtsi"' >> arch/arm64/boot/dts/qcom/msm8998-xiaomi-chiron.dts
 grep -q msm8998-xiaomi-chiron.dtb arch/arm64/boot/dts/qcom/Makefile ||
 	sed -i 's/^dtb-$(CONFIG_ARCH_QCOM)\t+= msm8998-xiaomi-sagit.dtb/&\ndtb-$(CONFIG_ARCH_QCOM)\t+= msm8998-xiaomi-chiron.dtb/' \
 		arch/arm64/boot/dts/qcom/Makefile
@@ -44,6 +49,7 @@ if [ ! -f .config ] || [ "$WIN/kernel/chiron.config" -nt .config ]; then
 	make olddefconfig
 	# Report fragment options that did not survive dependency resolution
 	while IFS= read -r line; do
+		line=${line%$'\r'}	# the fragment may have Windows line ends
 		case "$line" in CONFIG_*=*) grep -qxF "$line" .config || echo "NOT APPLIED: $line";; esac
 	done < "$WIN/kernel/chiron.config"
 fi
@@ -55,5 +61,18 @@ cp arch/arm64/boot/Image.gz arch/arm64/boot/dts/qcom/msm8998-xiaomi-chiron.dtb .
 cat "$OUT/Image.gz" "$OUT/msm8998-xiaomi-chiron.dtb" > "$OUT/Image.gz-dtb"
 make -s INSTALL_MOD_PATH="$OUT/modules" INSTALL_MOD_STRIP=1 modules_install
 make -s kernelrelease > "$OUT/kernelrelease"
+# Out-of-tree modules: speaker amplifiers, warm resets for crash logs
+UPD="$OUT/modules/lib/modules/$(cat "$OUT/kernelrelease")/updates"
+mkdir -p "$UPD"
+for m in tas2559 mix2-pon; do
+	T=$(mktemp -d)
+	cp "$WIN/kernel/$m"/*.[ch] "$WIN/kernel/$m/Makefile" "$T/"
+	sed -i 's/\r$//' "$T"/*
+	make -s -C "$SRC" M="$T" modules
+	for ko in "$T"/*.ko; do
+		"${CROSS_COMPILE}strip" --strip-debug -o "$UPD/${ko##*/}" "$ko"
+	done
+	rm -rf "$T"
+done
 echo "BUILD_OK $(cat "$OUT/kernelrelease")"
 ls -la "$OUT"

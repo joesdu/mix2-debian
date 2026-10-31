@@ -1,0 +1,7 @@
+[Unit]
+Description=Default mixer routing and volume controls of the sound card
+After=alsa-restore.service sound.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mix2-audio-init

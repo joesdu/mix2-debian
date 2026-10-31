@@ -1,0 +1,53 @@
+From: mix2-port <mix2@localhost>
+Subject: [PATCH] ASoC: wcd9335: enable SLIMbus slave ports only while streaming
+
+The slave ports were enabled in hw_params, before the bus channel was
+activated, and never disabled. On the phone about every second capture
+start then hit "underflow error on TX port 7" and delivered only zeros.
+Enable the ports right before activating the channel and disable them
+after removing it, like the downstream wcd9xxx slimslave code.
+---
+--- a/sound/soc/codecs/wcd9335.c	2026-10-27 02:59:05.831778925 +0800
++++ b/sound/soc/codecs/wcd9335.c	2026-10-27 02:59:05.858924599 +0800
+@@ -1950,6 +1950,25 @@
+ 	return 0;
+ }
+ 
++/*
++ * Enable the slave ports only around an active stream and disable them again
++ * afterwards, as the downstream driver does: a port left enabled between
++ * streams underflowed on the next start and the capture delivered only zeros.
++ */
++static void wcd9335_slim_enable_ports(struct wcd9335_codec *wcd,
++				      struct wcd_slim_codec_dai_data *dai_data,
++				      int direction, bool enable)
++{
++	unsigned int val = enable ? WCD9335_SLIM_WATER_MARK_VAL : SLAVE_PORT_DISABLE;
++	struct wcd9335_slim_ch *ch;
++
++	list_for_each_entry(ch, &dai_data->slim_ch_list, list)
++		regmap_write(wcd->if_regmap,
++			     direction == SNDRV_PCM_STREAM_PLAYBACK ?
++			     WCD9335_SLIM_PGD_RX_PORT_CFG(ch->port) :
++			     WCD9335_SLIM_PGD_TX_PORT_CFG(ch->port), val);
++}
++
+ static int wcd9335_trigger(struct snd_pcm_substream *substream, int cmd,
+ 			   struct snd_soc_dai *dai)
+ {
+@@ -1966,6 +1985,7 @@
+ 	case SNDRV_PCM_TRIGGER_RESUME:
+ 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+ 		cfg = &dai_data->sconfig;
++		wcd9335_slim_enable_ports(wcd, dai_data, substream->stream, true);
+ 		slim_stream_prepare(dai_data->sruntime, cfg);
+ 		slim_stream_enable(dai_data->sruntime);
+ 		break;
+@@ -1974,6 +1994,7 @@
+ 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+ 		slim_stream_disable(dai_data->sruntime);
+ 		slim_stream_unprepare(dai_data->sruntime);
++		wcd9335_slim_enable_ports(wcd, dai_data, substream->stream, false);
+ 		break;
+ 	default:
+ 		break;

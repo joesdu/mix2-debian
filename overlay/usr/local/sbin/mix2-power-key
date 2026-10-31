@@ -1,10 +1,15 @@
 #!/usr/bin/python3
-"""Power key: a short press blanks the screen or wakes it up again.
+"""Power key: a short press blanks the screen, any press wakes it up again.
 
 X ignores the power key device (xorg.conf.d/40-mix2-power-key.conf), so a
 press does not wake the screen behind our back, and logind only acts on a
 long press (HandlePowerKeyLongPress=poweroff in logind.conf.d/50-mix2.conf). Touching the
 screen also wakes it, as the touch controller keeps running.
+
+A blanked screen wakes as soon as the key goes down, however long it is
+held: a dark screen that ignored a longer press looked like a hung phone.
+Two short presses (off, on) also initialise the panel again, which fixes a
+picture that came up wrong.
 """
 import glob
 import os
@@ -43,18 +48,26 @@ def xset(user, *args):
                           capture_output=True, text=True).stdout
 
 
-def toggle_screen():
+def wake_if_blank():
+    """Wake a blanked screen; returns True when it was blank."""
+    user = desktop_user()
+    if not user:
+        return False
+    # xfce4-power-manager keeps DPMS disabled (no idle blanking), and then
+    # xset q reports no monitor state at all: that means the screen is on.
+    if "Monitor is Off" in xset(user, "q"):
+        xset(user, "dpms", "force", "on")
+        return True
+    return False
+
+
+def blank_screen():
     user = desktop_user()
     if not user:
         return
-    # xfce4-power-manager keeps DPMS disabled (no idle blanking), and then
-    # xset q reports no monitor state at all: that means the screen is on.
     # "dpms force" enables DPMS, so drop its idle timeouts first.
-    if "Monitor is Off" in xset(user, "q"):
-        xset(user, "dpms", "force", "on")
-    else:
-        xset(user, "dpms", "0", "0", "0")
-        xset(user, "dpms", "force", "off")
+    xset(user, "dpms", "0", "0", "0")
+    xset(user, "dpms", "force", "off")
 
 
 def main():
@@ -64,6 +77,7 @@ def main():
         if dev is None:
             time.sleep(2)
     pressed_at = None
+    woke = False
     with open(dev, "rb") as f:
         while True:
             _, _, typ, code, value = EVENT.unpack(f.read(EVENT.size))
@@ -71,9 +85,10 @@ def main():
                 continue
             if value == 1:
                 pressed_at = time.monotonic()
+                woke = wake_if_blank()
             elif value == 0 and pressed_at is not None:
-                if time.monotonic() - pressed_at < SHORT_PRESS:
-                    toggle_screen()
+                if not woke and time.monotonic() - pressed_at < SHORT_PRESS:
+                    blank_screen()
                 pressed_at = None
 
 

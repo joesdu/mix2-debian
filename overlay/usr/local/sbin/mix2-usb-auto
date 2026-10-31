@@ -1,0 +1,58 @@
+#!/bin/sh
+# Switch the USB-C port to host mode by itself when a powered hub/dock is
+# plugged in, so it charges the phone and its USB ports work at the same time.
+#
+# When external power appears in device mode: a computer enumerates the phone
+# within a few seconds (USB networking, stay in device mode). Otherwise try
+# host mode without our own 5 V: if a USB device shows up it is a dock, stay;
+# if not (plain charger), go back to device mode until the next plug-in.
+# Unplugging returns to device mode. A host mode chosen by hand with the
+# phone's own 5 V output (mix2-usb-mode host, nothing powering the port) is
+# left alone.
+
+ROLE=$(ls -d /sys/class/usb_role/*-role-switch 2>/dev/null | head -1)/role
+VOUT=$(ls -d /sys/bus/platform/drivers/reg-userspace-consumer/*/ 2>/dev/null | head -1)
+CHG=/sys/class/power_supply/pmi8998-charger/online
+UDC=$(ls -d /sys/class/udc/* 2>/dev/null | head -1)/state
+WAIT=6
+
+online() { [ "$(cat "$CHG" 2>/dev/null)" = 1 ]; }
+own_vbus() { [ "$(cat "$VOUT/state" 2>/dev/null)" = enabled ]; }
+role() { cat "$ROLE" 2>/dev/null; }
+# USB devices behind our host controller (root hubs are named usbN)
+usb_devices() { ls /sys/bus/usb/devices 2>/dev/null | grep -c '^[0-9]*-[0-9.]*$'; }
+
+wait_for() {
+	i=0
+	while [ $i -lt $WAIT ]; do
+		eval "$1" && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+
+auto_host=0
+handled=0
+while :; do
+	if online && ! own_vbus; then
+		if [ $handled = 0 ] && [ "$(role)" = device ]; then
+			handled=1
+			if ! wait_for '[ "$(cat "$UDC" 2>/dev/null)" = configured ]' && online; then
+				/usr/local/sbin/mix2-usb-mode host >/dev/null
+				if wait_for '[ "$(usb_devices)" -gt 0 ]'; then
+					auto_host=1
+				else
+					/usr/local/sbin/mix2-usb-mode device >/dev/null
+				fi
+			fi
+		fi
+	elif ! own_vbus; then
+		handled=0
+		if [ $auto_host = 1 ]; then
+			auto_host=0
+			[ "$(role)" = host ] && /usr/local/sbin/mix2-usb-mode device >/dev/null
+		fi
+	fi
+	sleep 1
+done

@@ -57,11 +57,27 @@
 	sound: sound {
 		compatible = "qcom,msm8998-sndcard";
 		model = "chiron-wcd9335";
-		audio-routing = "RX_BIAS", "MCLK";
+		/*
+		 * Stock mic wiring: handset mics on AMIC4 (MIC BIAS1) and AMIC3
+		 * (MIC BIAS4), headset mic on AMIC2 (MIC BIAS2). Capture needs the
+		 * codec master clock as much as playback does: without it the
+		 * decimators deliver only zeros.
+		 */
+		audio-routing = "RX_BIAS", "MCLK",
+				"AIF1 CAP", "MCLK",
+				"AMIC2", "MIC BIAS2",
+				"AMIC3", "MIC BIAS4",
+				"AMIC4", "MIC BIAS1";
 
 		mm1-dai-link {
 			link-name = "MultiMedia1";
 			cpu { sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>; };
+		};
+
+		/* A second stream, so recording can run while something plays. */
+		mm2-dai-link {
+			link-name = "MultiMedia2";
+			cpu { sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>; };
 		};
 
 		slim-dai-link {

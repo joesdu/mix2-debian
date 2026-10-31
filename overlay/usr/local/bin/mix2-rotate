@@ -1,8 +1,10 @@
 #!/bin/sh
 # Rotate the screen and the touchscreen together.
-# usage: mix2-rotate normal|left|right|inverted|toggle|restore
+# usage: mix2-rotate normal|left|right|inverted|toggle|restore|map
 #   toggle   switch between portrait (normal) and landscape (right)
 #   restore  re-apply the last orientation (run at login)
+#   map      only map the touchscreens to the output again (for a touchscreen
+#            that appeared later, e.g. the one of mix2-touch-longpress)
 # The chosen orientation is remembered in ~/.config/mix2-rotation.
 
 STATE=${XDG_CONFIG_HOME:-$HOME/.config}/mix2-rotation
@@ -24,10 +26,13 @@ case "$1" in
 	normal|left|right|inverted) want=$1 ;;
 	toggle) [ "$(current)" = normal ] && want=right || want=normal ;;
 	restore) want=$(cat "$STATE" 2>/dev/null); [ -n "$want" ] || exit 0 ;;
-	*) echo "usage: $0 normal|left|right|inverted|toggle|restore" >&2; exit 1 ;;
+	map) want= ;;
+	*) echo "usage: $0 normal|left|right|inverted|toggle|restore|map" >&2; exit 1 ;;
 esac
 
-xrandr --output "$output" --rotate "$want" || exit 1
+if [ -n "$want" ]; then
+	xrandr --output "$output" --rotate "$want" || exit 1
+fi
 
 # Map every touchscreen onto the (now rotated) output
 for id in $(xinput list --id-only 2>/dev/null); do
@@ -37,5 +42,6 @@ for id in $(xinput list --id-only 2>/dev/null); do
 	fi
 done
 
+[ -n "$want" ] || exit 0
 mkdir -p "$(dirname "$STATE")"
 echo "$want" > "$STATE"

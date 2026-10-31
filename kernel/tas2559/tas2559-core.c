@@ -2584,6 +2584,7 @@ static int tas2559_program_checked(struct tas2559_priv *tas,
 	static const unsigned int devices[] = {DevA, DevB, DevA, DevA, DevB, DevA, DevA};
 	struct TConfiguration *cfg;
 	unsigned int i, value;
+	bool earpiece;
 	int ret, reset_ret;
 
 	if (!tas->diagnostic_reset || !tas->write || !tas->read ||
@@ -2608,9 +2609,17 @@ static int tas2559_program_checked(struct tas2559_priv *tas,
 		ret = -EINVAL;
 		goto unlock;
 	}
-	cfg = &fw->mpConfigurations[4];
-	if (cfg->mnProgram || cfg->mnPLL || cfg->mnDevices != DevBoth ||
-	    cfg->mnSamplingRate != 48000 || cfg->mData.mnBlocks != 4 ||
+	/*
+	 * Speaker: config 4 (both devices). Earpiece: config 3, DevA only (stock
+	 * "handset"); its DevB pre and post-power blocks do not exist and DevB
+	 * stays muted and powered down. The diagnostic always uses config 4.
+	 */
+	earpiece = playback && tas->play_config == 3;
+	cfg = &fw->mpConfigurations[earpiece ? 3 : 4];
+	if (cfg->mnProgram || cfg->mnPLL ||
+	    cfg->mnDevices != (earpiece ? DevA : DevBoth) ||
+	    cfg->mnSamplingRate != 48000 ||
+	    cfg->mData.mnBlocks != (earpiece ? 2 : 4) ||
 	    !cfg->mData.mpBlocks) {
 		ret = -EINVAL;
 		goto unlock;
@@ -2619,17 +2628,17 @@ static int tas2559_program_checked(struct tas2559_priv *tas,
 	blocks[1] = &fw->mpPrograms[0].mData.mpBlocks[1];
 	blocks[2] = &fw->mpPLLs[0].mBlock;
 	blocks[3] = &cfg->mData.mpBlocks[1];
-	blocks[4] = &cfg->mData.mpBlocks[2];
+	blocks[4] = earpiece ? NULL : &cfg->mData.mpBlocks[2];
 	blocks[5] = &cfg->mData.mpBlocks[0];
 	blocks[6] = &cal->mpCalibrations[0].mData.mpBlocks[0];
 	if (blocks[0]->mnType != TAS2559_BLOCK_PGM_DEV_A ||
 	    blocks[1]->mnType != TAS2559_BLOCK_PGM_DEV_B ||
 	    blocks[2]->mnType != TAS2559_BLOCK_PLL ||
 	    blocks[3]->mnType != TAS2559_BLOCK_CFG_PRE_DEV_A ||
-	    blocks[4]->mnType != TAS2559_BLOCK_CFG_PRE_DEV_B ||
+	    (blocks[4] && blocks[4]->mnType != TAS2559_BLOCK_CFG_PRE_DEV_B) ||
 	    blocks[5]->mnType != TAS2559_BLOCK_CFG_COEFF_DEV_A ||
 	    blocks[6]->mnType != TAS2559_BLOCK_CFG_COEFF_DEV_A ||
-	    cfg->mData.mpBlocks[3].mnType != TAS2559_BLOCK_PST_POWERUP_DEV_B ||
+	    (!earpiece && cfg->mData.mpBlocks[3].mnType != TAS2559_BLOCK_PST_POWERUP_DEV_B) ||
 	    !blocks[0]->mbPChkSumPresent || !blocks[0]->mbYChkSumPresent ||
 	    !blocks[5]->mbYChkSumPresent || !tas->mbYCRCEnable) {
 		ret = -EINVAL;
@@ -2637,6 +2646,8 @@ static int tas2559_program_checked(struct tas2559_priv *tas,
 	}
 	/* Reject the entire transaction before even releasing RESET_N. */
 	for (i = 0; i < ARRAY_SIZE(blocks); i++) {
+		if (!blocks[i])
+			continue;
 		if (blocks[i]->mnCommands > 16384) {
 			ret = -EINVAL;
 			goto unlock;
@@ -2646,7 +2657,7 @@ static int tas2559_program_checked(struct tas2559_priv *tas,
 		if (ret)
 			goto unlock;
 	}
-	if (playback) {
+	if (playback && !earpiece) {
 		ret = tas2559_playback_post(tas, false);
 		if (ret)
 			goto unlock;
@@ -2693,6 +2704,8 @@ static int tas2559_program_checked(struct tas2559_priv *tas,
 	if (ret < 0)
 		goto reset;
 	for (i = 0; i < ARRAY_SIZE(blocks) - 1; i++) {
+		if (!blocks[i])
+			continue;
 		ret = tas2559_load_block(tas, blocks[i]);
 		if (ret < 0)
 			goto reset;

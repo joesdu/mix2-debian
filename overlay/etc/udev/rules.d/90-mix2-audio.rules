@@ -1,0 +1,5 @@
+# When the phone's sound card appears, apply the default routing and create
+# the software volume controls at their saved (or a quiet) level before
+# anything can play or record. Runs as a service so it comes after
+# alsa-restore (90-alsa-restore.rules) and outside the udev sandbox.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="chironwcd9335", TAG+="systemd", ENV{SYSTEMD_WANTS}+="mix2-audio-init.service"

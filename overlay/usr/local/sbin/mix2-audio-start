@@ -1,0 +1,25 @@
+#!/bin/sh
+# Start the ADSP and load the TAS2559/TAS2560 speaker amplifier driver.
+# The sound card (WCD9335 + QUAT MI2S speaker link) only appears once the
+# amplifier component is registered. Kernels without the module: nothing to do.
+# Driver options: /etc/modprobe.d/mix2-tas2559.conf
+
+modinfo -n snd-soc-tas2559 >/dev/null 2>&1 || {
+	echo "no snd-soc-tas2559 for $(uname -r), audio not started"
+	exit 0
+}
+
+for r in /sys/class/remoteproc/remoteproc*; do
+	[ "$(cat "$r/name" 2>/dev/null)" = adsp ] || continue
+	[ "$(cat "$r/state")" = running ] || echo start > "$r/state"
+	i=0
+	while [ "$(cat "$r/state")" != running ] && [ $i -lt 30 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	echo "adsp: $(cat "$r/state")"
+done
+
+# The APR audio services register shortly after the ADSP is up
+sleep 3
+exec modprobe snd-soc-tas2559

@@ -5,9 +5,9 @@ usage: mix2-volume up|down|mute|init
 
 Playback through the ALSA default device goes through a softvol control
 "Master" (/etc/asound.conf). softvol would create that control at full volume
-on the first playback, so "init" (run by udev when the card appears, see
-/etc/udev/rules.d/90-mix2-volume.rules) creates it beforehand at the last
-saved level, or a quiet default.
+on the first playback, so "init" (run by mix2-audio-init when the card
+appears) creates it beforehand at the last saved level, or a quiet default,
+together with the capture gain "Mic Boost".
 """
 import ctypes
 import os
@@ -22,6 +22,10 @@ MIN_DB = -51.0            # min_dB in /etc/asound.conf, max_dB is 0
 DEFAULT = 105             # about -30 dB
 STEP = 13                 # about 5 %
 STATE = "/var/lib/mix2/volume"
+BOOST = "Mic Boost"       # capture softvol in /etc/asound.conf
+BOOST_MAX = 40            # resolution 41: min_dB -10 .. max_dB +30, 1 dB steps
+BOOST_MIN_DB = -10.0
+BOOST_DEFAULT = 25        # +15 dB
 
 
 def amixer(*args):
@@ -68,8 +72,9 @@ def muted_from():
         return 0
 
 
-def create_control():
-    """Create "Master" the way softvol would (2 channels, 0..255, dB scale)."""
+def create_control(name=CONTROL, count=2, maximum=MAX, min_db=MIN_DB,
+                   step_db=-MIN_DB / MAX, mute=True):
+    """Create a softvol control beforehand, the way softvol would."""
     asound = ctypes.CDLL("libasound.so.2")
     ctl = ctypes.c_void_p()
     if asound.snd_ctl_open(ctypes.byref(ctl), ("hw:" + CARD).encode(), 0) < 0:
@@ -77,14 +82,13 @@ def create_control():
     elem = ctypes.c_void_p()
     asound.snd_ctl_elem_id_malloc(ctypes.byref(elem))
     asound.snd_ctl_elem_id_set_interface(elem, 2)  # SND_CTL_ELEM_IFACE_MIXER
-    asound.snd_ctl_elem_id_set_name(elem, CONTROL.encode())
-    ok = asound.snd_ctl_elem_add_integer(ctl, elem, 2, ctypes.c_long(0),
-                                         ctypes.c_long(MAX), ctypes.c_long(1)) >= 0
+    asound.snd_ctl_elem_id_set_name(elem, name.encode())
+    ok = asound.snd_ctl_elem_add_integer(ctl, elem, count, ctypes.c_long(0),
+                                         ctypes.c_long(maximum), ctypes.c_long(1)) >= 0
     if ok:
         # SNDRV_CTL_TLVT_DB_SCALE, 8 bytes, min in 0.01 dB, step | mute flag
-        step = int(-MIN_DB * 100 / MAX)
-        tlv = (ctypes.c_uint * 4)(1, 8, ctypes.c_uint(int(MIN_DB * 100)).value,
-                                  step | 0x10000)
+        tlv = (ctypes.c_uint * 4)(1, 8, ctypes.c_uint(int(min_db * 100)).value,
+                                  int(step_db * 100) | (0x10000 if mute else 0))
         asound.snd_ctl_elem_tlv_write(ctl, elem, tlv)
     asound.snd_ctl_elem_id_free(elem)
     asound.snd_ctl_close(ctl)
@@ -117,6 +121,11 @@ def main():
         if get() is None:
             create_control()
         set_level(load())
+        # Capture gain of the ALSA default device (asound.conf): 1 dB steps,
+        # -10..+30 dB; start at +15 dB, later kept by alsactl store/restore.
+        if amixer("cget", "name=" + BOOST).returncode != 0 and \
+                create_control(BOOST, 1, BOOST_MAX, BOOST_MIN_DB, 1.0, False):
+            amixer("cset", "name=" + BOOST, str(BOOST_DEFAULT))
         return 0
     if cmd not in ("up", "down", "mute"):
         print(__doc__.strip().splitlines()[2], file=sys.stderr)

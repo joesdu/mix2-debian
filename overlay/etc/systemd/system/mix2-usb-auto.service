@@ -1,0 +1,11 @@
+[Unit]
+Description=Switch the USB-C port to host mode for powered hubs and docks
+After=mix2-usb-gadget.service
+
+[Service]
+ExecStart=/usr/local/sbin/mix2-usb-auto
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

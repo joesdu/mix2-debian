@@ -1,0 +1,101 @@
+#!/bin/sh
+# Switch the USB-C port between device and host mode by itself, depending on
+# what is plugged in, so hubs, keyboards and mice work without the panel button.
+#
+# - Something powers the port (computer, charger, hub/dock with its own
+#   charger): a computer enumerates the phone within a few seconds (USB
+#   networking, stay in device mode). Otherwise try host mode without our own
+#   5 V: if a USB device shows up it is a powered hub/dock (it charges the
+#   phone and its ports work), stay; if not (plain charger), go back to device
+#   mode until the next plug-in.
+# - The PMI8998 Type-C block reports a sink (Rd) on the other end and nothing
+#   powers the port: a hub without a charger, an OTG keyboard, a flash drive.
+#   Switch to host mode with the phone's own 5 V.
+# - Unplugging undoes what this script switched. A mode chosen by hand with
+#   the panel button is left alone.
+
+ROLE=$(ls -d /sys/class/usb_role/*-role-switch 2>/dev/null | head -1)/role
+VOUT=$(ls -d /sys/bus/platform/drivers/reg-userspace-consumer/*/ 2>/dev/null | head -1)
+CHG=/sys/class/power_supply/pmi8998-charger/online
+UDC=$(ls -d /sys/class/udc/* 2>/dev/null | head -1)/state
+# PMI8998 (SPMI slave 2) registers; mainline has no Type-C driver for it
+PMIC=/sys/kernel/debug/regmap/0-02/registers
+WAIT=6
+
+online() { [ "$(cat "$CHG" 2>/dev/null)" = 1 ]; }
+own_vbus() { [ "$(cat "$VOUT/state" 2>/dev/null)" = enabled ]; }
+role() { cat "$ROLE" 2>/dev/null; }
+mode() { /usr/local/sbin/mix2-usb-mode "$1" >/dev/null; }
+# USB devices behind our host controller (root hubs are named usbN)
+usb_devices() { ls /sys/bus/usb/devices 2>/dev/null | grep -c '^[0-9]*-[0-9.]*$'; }
+
+# One register from the regmap debugfs dump: fixed 9-byte lines "130e: 93\n"
+pmic_reg() {
+	l=$(dd if="$PMIC" bs=9 skip=$(($1)) count=1 2>/dev/null)
+	case "$l" in
+		"$(printf %04x $(($1))): "??) echo $((0x${l#*: })) ;;
+		*) echo 0 ;;
+	esac
+}
+# TYPE_C_STATUS_4 (0x130e): CC attached (bit 0), debounce done (bit 4), we are
+# the source/DFP (bit 7). TYPE_C_STATUS_2 (0x130c): the partner shows Rd on one
+# CC line (bit 2, bit 1 with an e-marked cable). Audio adapters (Ra/Ra) and
+# debug accessories (Rd/Rd) do not count.
+sink_attached() {
+	[ -r "$PMIC" ] || return 1
+	s4=$(pmic_reg 0x130e)
+	[ $((s4 & 0x91)) = $((0x91)) ] || return 1
+	[ $(($(pmic_reg 0x130c) & 0x06)) != 0 ]
+}
+
+wait_for() {
+	i=0
+	while [ $i -lt $WAIT ]; do
+		eval "$1" && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+
+auto_host=0
+last=none
+while :; do
+	if online && ! own_vbus; then
+		kind=power
+	elif sink_attached; then
+		kind=sink
+	else
+		kind=none
+	fi
+	if [ "$kind" != "$last" ]; then
+		last=$kind
+		case $kind in
+			power)
+				if [ "$(role)" = device ] &&
+					! wait_for '[ "$(cat "$UDC" 2>/dev/null)" = configured ]' && online; then
+					mode host
+					if wait_for '[ "$(usb_devices)" -gt 0 ]'; then
+						auto_host=1
+					else
+						mode device
+					fi
+				fi
+				;;
+			sink)
+				# also when a powered hub loses its charger while plugged in
+				if [ "$(role)" = device ] || [ $auto_host = 1 ]; then
+					mode host
+					auto_host=1
+				fi
+				;;
+			none)
+				if [ $auto_host = 1 ]; then
+					auto_host=0
+					{ [ "$(role)" = host ] || own_vbus; } && mode device
+				fi
+				;;
+		esac
+	fi
+	sleep 1
+done

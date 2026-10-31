@@ -1,3 +1,0 @@
-# Create the softvol "Master" control at the saved (or a quiet) level as soon
-# as the phone's sound card appears, before anything can play through it.
-ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{id}=="chironwcd9335", RUN+="/usr/local/bin/mix2-volume init"

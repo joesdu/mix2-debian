@@ -1,0 +1,2 @@
+# Let the desktop user take, roll back and delete system snapshots (mix2-snapshot-gui)
+mix2 ALL=(root) NOPASSWD: /usr/local/sbin/mix2-snapshot

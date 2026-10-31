@@ -438,6 +438,8 @@ struct tas2559_priv {
 	struct i2c_client *client;
 	struct gpio_desc *diagnostic_reset_gpio;
 	struct tas2559_playback *playback;
+	/* Controlled playback configuration: 4 speaker (both), 3 earpiece (DevA) */
+	unsigned int play_config;
 	struct mutex dev_lock;
 	struct TFirmware *mpFirmware;
 	struct TFirmware *mpCalFirmware;

@@ -1,0 +1,4 @@
+// Snapshot the system volume (LVM thin snapshot of mix2/root) before dpkg
+// changes anything; mix2-snapshot keeps the last few automatic ones and does
+// nothing when the system is not on LVM.
+DPkg::Pre-Invoke { "if [ -x /usr/local/sbin/mix2-snapshot ]; then /usr/local/sbin/mix2-snapshot auto || true; fi"; };

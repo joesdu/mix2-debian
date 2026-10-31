@@ -1,6 +1,6 @@
 # Chiron audio bring-up — current status
 
-Updated 2026-10-27.
+Updated 2026-11-01.
 
 ## Evidence ladder
 
@@ -14,8 +14,10 @@ Updated 2026-10-27.
 | Volume keys → software volume, level remembered | Verified on the phone |
 | Loudness/stability at stock gain 15 | Under evaluation |
 | Earpiece/headphones (WCD9335 SLIMbus), recording | Not working: DSP rejects starting SLIMBUS_6_RX (`error[9]`) |
-| Automatic ADSP start / module load at boot, desktop sound server | Not done |
-| Permanent boot deployment | Not done |
+| Automatic ADSP start / module load at boot (mix2-audio.service) | Done |
+| Seeking in a player (VLC) | Works through dmix (see Userspace) |
+| Desktop sound server | Not done (plain ALSA + dmix) |
+| Permanent boot deployment | Done 2026-11-01 (kernel 6.18.58-chiron-disp2 in the boot partition) |
 
 ## Root causes fixed
 
@@ -41,15 +43,16 @@ Updated 2026-10-27.
 - `kernel/msm8998-xiaomi-chiron.dts`: sound card, WCD9335 on SLIMbus, TAS2559
   node on `blsp2_i2c4`.
 - `kernel/tas2559/chiron-quat-experimental.dtsi`: QUAT MI2S link (GPIO58 BCLK,
-  59 WS, 60 SD0; `qcom,sd-lines = <0>`). Not included by default: with it, the
-  whole card defers until the TAS playback component is loaded.
+  59 WS, 60 SD0; `qcom,sd-lines = <0>`). `scripts/build_kernel.sh` appends it
+  to the DTS; the whole card defers until the TAS playback component is loaded.
 - `kernel/tas2559/`: the amplifier module (out of tree), see its README.
 
-The tested kernels appended the QUAT fragment and `kernel/local.dtsi` to the
-DTS, built `kernel/tas2559` against the same tree (`make M=...`) and installed
-it to `/usr/lib/modules/<release>/updates/`. Each test kernel gets its own
-release name and its own complete module directory: never reuse a release
-name for a different build (mismatched modules broke the display once).
+`scripts/build_kernel.sh` appends the QUAT fragment and `kernel/local.dtsi` to
+the DTS, builds `kernel/tas2559` (and `kernel/mix2-pon`) against the same tree
+(`make M=...`) and puts them in `/lib/modules/<release>/updates/` of the
+module tarball. Each test kernel gets its own release name and its own
+complete module directory: never reuse a release name for a different build
+(mismatched modules broke the display once).
 
 ## Running it (manual for now)
 
@@ -62,9 +65,13 @@ name for a different build (mismatched modules broke the display once).
 
 ## Userspace (overlay/)
 
-- `/etc/asound.conf`: `default` is plug → softvol `Master` → `hw:chironwcd9335,0`;
-  plug converts to the only format the speaker path takes (48 kHz, stereo,
-  S16_LE).
+- `/etc/asound.conf`: `default` is plug → softvol `Master` → dmix →
+  `hw:chironwcd9335,0`; plug converts to the only format the speaker path
+  takes (48 kHz, stereo, S16_LE). dmix (period 1920, buffer 7680 frames)
+  keeps the DSP stream running across a player's flush/refill: without it,
+  VLC restarted the stream after a seek with less than one period queued,
+  hit an underrun at once and stayed silent. It also lets several programs
+  play at once.
 - `mix2-volume up|down|mute|init`, bound to the volume keys
   (`XF86AudioRaiseVolume`/`LowerVolume`/`Mute` in skel). udev runs `init` when
   the card appears and creates `Master` at the saved or a quiet level before

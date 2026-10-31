@@ -14,6 +14,14 @@ sed -i 's/\r$//' "$WORK/init"
 chmod 755 "$WORK/init" "$WORK/bin/busybox"
 ln -sf busybox "$WORK/bin/sh"
 cp "$WIN/tools/mix2-reboot" "$WORK/bin/mix2-reboot"; chmod 755 "$WORK/bin/mix2-reboot"
+# lvm, thin_check, e2fsprogs, GNU tar and their libraries (root on LVM, rescue
+# work): collected on the phone by scripts/initramfs_extras.sh
+EXTRAS=$WIN/downloads/initramfs-extras-arm64.tar.gz
+if [ -f "$EXTRAS" ]; then
+	tar -xzf "$EXTRAS" -C "$WORK"
+else
+	echo "note: no $EXTRAS, initramfs without LVM support"
+fi
 (cd "$WORK" && find . | cpio -o -H newc --owner=0:0 2>/dev/null | gzip -9) > "$OUT/initramfs.cpio.gz"
 
 CMDLINE="clk_ignore_unused pd_ignore_unused arm-smmu.disable_bypass=0 console=tty0 fbcon=font:TER16x32 quiet loglevel=4 modprobe.blacklist=ipa"

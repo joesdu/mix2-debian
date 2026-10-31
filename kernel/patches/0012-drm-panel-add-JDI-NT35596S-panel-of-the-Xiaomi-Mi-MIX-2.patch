@@ -11,9 +11,18 @@ then fixed up on the device:
 - the stock on-command (long_init, default) and the XBL panel XML sequence;
   the generator had turned the 1-byte 0x51 writes into 2-byte brightness
 - handover (default): keep the panel the bootloader brought up at boot
-- never send display off / sleep in: this panel then stops answering on the
-  link for good. The supplies stay on and every later prepare resets and
-  initialises it again (the backlight is switched off meanwhile)
+- the supplies stay on; every later prepare resets and initialises the
+  panel again
+- disable sends display off and sleep in, like the stock off-command
+  (sleep_on_disable). With the video stream just cut off instead, the panel
+  came up with snow and stripes after every other reset (screen rotation
+  included); with it, 14 of 14 came up clean
+- wait 150 ms after releasing the reset (reset_delay_ms): with the stock
+  10 ms, 8 of 12 screen-on cycles came up wrong (colour pages at their
+  defaults, idle/8-colour mode, or no answer at all). That also explains an
+  earlier finding that the panel never answered again after sleep in
+- read back the power mode and some colour page registers after init and
+  initialise again when they are wrong (verify, max_retries, verbose)
 ---
 --- a/drivers/gpu/drm/panel/Kconfig	2026-10-25 17:08:39.643437829 +0800
 +++ b/drivers/gpu/drm/panel/Kconfig	2026-10-25 17:08:39.643560686 +0800
@@ -44,9 +53,9 @@ then fixed up on the device:
  obj-$(CONFIG_DRM_PANEL_JDI_R63452) += panel-jdi-fhd-r63452.o
  obj-$(CONFIG_DRM_PANEL_KHADAS_TS050) += panel-khadas-ts050.o
  obj-$(CONFIG_DRM_PANEL_KINGDISPLAY_KD097D04) += panel-kingdisplay-kd097d04.o
---- a/drivers/gpu/drm/panel/panel-jdi-nt35596s.c	1970-01-01 08:00:00.000000000 +0800
-+++ b/drivers/gpu/drm/panel/panel-jdi-nt35596s.c	2026-10-25 17:08:39.648566640 +0800
-@@ -0,0 +1,446 @@
+--- a/drivers/gpu/drm/panel/panel-jdi-nt35596s.c
++++ b/drivers/gpu/drm/panel/panel-jdi-nt35596s.c
+@@ -0,0 +1,600 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +// Copyright (c) 2026 joesdu
 +// Generated with linux-mdss-dsi-panel-driver-generator from vendor device tree:
@@ -73,6 +82,30 @@ then fixed up on the device:
 +module_param(long_init, bool, 0644);
 +MODULE_PARM_DESC(long_init, "Use the stock kernel DT init sequence instead of the XBL one");
 +
++/*
++ * The panel is never put to sleep (see below), so every reset hits it in
++ * sleep out mode. Like other DCS driver ICs it then needs up to 120 ms to
++ * blank and reload its defaults before it takes commands; with the 10 ms of
++ * the stock reset sequence (which Android applies after sleep in) parts of
++ * the init sequence got lost now and then: washed out, grey looking colours
++ * and soft text, or a panel that stayed dark.
++ */
++static unsigned int reset_delay_ms = 150;
++module_param(reset_delay_ms, uint, 0644);
++MODULE_PARM_DESC(reset_delay_ms, "Wait after releasing the panel reset before initialising it (ms)");
++
++static bool verify = true;
++module_param(verify, bool, 0644);
++MODULE_PARM_DESC(verify, "Read back the panel state after initialising it, and initialise it again when it is wrong");
++
++static unsigned int max_retries = 2;
++module_param(max_retries, uint, 0644);
++MODULE_PARM_DESC(max_retries, "How often to initialise the panel again when the read back state is wrong");
++
++static bool verbose;
++module_param(verbose, bool, 0644);
++MODULE_PARM_DESC(verbose, "Log the read back panel state after every initialisation");
++
 +struct jdi_nt35596s {
 +	struct drm_panel panel;
 +	struct mipi_dsi_device *dsi;
@@ -98,7 +131,7 @@ then fixed up on the device:
 +	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 +	usleep_range(10000, 11000);
 +	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
-+	usleep_range(10000, 11000);
++	msleep(max(reset_delay_ms, 10U));
 +}
 +
 +/*
@@ -325,11 +358,87 @@ then fixed up on the device:
 +	return dsi_ctx.accum_err;
 +}
 +
++/* A few registers of each manufacturer page the long sequence programs */
++static const struct {
++	u8 page, reg, val;
++} jdi_nt35596s_checks[] = {
++	{ 0x24, 0xc4, 0x25 }, { 0x24, 0xd2, 0x84 },
++	{ 0x26, 0x03, 0x1c }, { 0x26, 0xc5, 0x08 },
++	{ 0x23, 0x01, 0x84 }, { 0x23, 0x20, 0x83 }, { 0x23, 0x21, 0xee },
++	{ 0x22, 0x00, 0x0a }, { 0x22, 0x11, 0x18 }, { 0x22, 0x84, 0xff },
++	{ 0x22, 0xa2, 0x20 }, { 0x22, 0xd3, 0x02 },
++};
++
++static int jdi_nt35596s_read(struct jdi_nt35596s *ctx, u8 reg, u8 *val)
++{
++	int ret = mipi_dsi_dcs_read(ctx->dsi, reg, val, 1);
++
++	if (ret < 0)
++		return ret;
++	return ret == 1 ? 0 : -EIO;
++}
++
++/*
++ * Check that the panel is awake and displaying and, after the long sequence,
++ * that its colour pages hold what was written. Returns the number of wrong
++ * registers, or a negative error when they cannot be read.
++ */
++static int jdi_nt35596s_check(struct jdi_nt35596s *ctx, char *log, size_t len)
++{
++	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
++	u8 page = 0x10, sel[2], val;
++	size_t n;
++	int i, ret, bad = 0;
++
++	ret = jdi_nt35596s_read(ctx, MIPI_DCS_GET_POWER_MODE, &val);
++	if (ret)
++		return ret;
++	/* Booster on, sleep out, normal mode, display on */
++	if (val != 0x9c)
++		bad++;
++	n = scnprintf(log, len, "power mode %02x%s", val, val != 0x9c ? "!" : "");
++
++	if (!long_init)
++		return bad;
++
++	for (i = 0; i < ARRAY_SIZE(jdi_nt35596s_checks); i++) {
++		if (jdi_nt35596s_checks[i].page != page) {
++			page = jdi_nt35596s_checks[i].page;
++			sel[0] = 0xff;
++			sel[1] = page;
++			mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, sel, 2);
++			mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfb, 0x01);
++			if (dsi_ctx.accum_err) {
++				ret = dsi_ctx.accum_err;
++				break;
++			}
++		}
++		ret = jdi_nt35596s_read(ctx, jdi_nt35596s_checks[i].reg, &val);
++		if (ret)
++			break;
++		if (val != jdi_nt35596s_checks[i].val)
++			bad++;
++		n += scnprintf(log + n, len - n, " %02x:%02x=%02x%s", page,
++			       jdi_nt35596s_checks[i].reg, val,
++			       val != jdi_nt35596s_checks[i].val ? "!" : "");
++	}
++
++	/* Back to the user command set */
++	dsi_ctx.accum_err = 0;
++	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x10);
++	if (!ret)
++		ret = dsi_ctx.accum_err;
++
++	return ret ? ret : bad;
++}
++
 +static int jdi_nt35596s_prepare(struct drm_panel *panel)
 +{
 +	struct jdi_nt35596s *ctx = to_jdi_nt35596s(panel);
 +	struct device *dev = &ctx->dsi->dev;
-+	int ret;
++	unsigned int attempt;
++	char log[256];
++	int ret, bad;
 +
 +	/*
 +	 * The rails stay up once enabled, like on the stock kernel where the
@@ -355,24 +464,77 @@ then fixed up on the device:
 +		}
 +	}
 +
-+	jdi_nt35596s_reset(ctx);
++	for (attempt = 1; ; attempt++) {
++		jdi_nt35596s_reset(ctx);
 +
-+	ret = long_init ? jdi_nt35596s_on_long(ctx) : jdi_nt35596s_on_short(ctx);
-+	if (ret < 0) {
-+		dev_err(dev, "Failed to initialize panel: %d\n", ret);
-+		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-+		return ret;
++		ret = long_init ? jdi_nt35596s_on_long(ctx) : jdi_nt35596s_on_short(ctx);
++		if (ret < 0) {
++			dev_err(dev, "Failed to initialize panel: %d\n", ret);
++			gpiod_set_value_cansleep(ctx->reset_gpio, 1);
++			return ret;
++		}
++
++		if (!verify)
++			break;
++
++		bad = jdi_nt35596s_check(ctx, log, sizeof(log));
++		if (bad < 0) {
++			dev_warn(dev, "Cannot read back the panel state: %d\n", bad);
++			break;
++		}
++		if (!bad) {
++			if (verbose || attempt > 1)
++				dev_info(dev, "panel up (attempt %u, reset delay %u ms): %s\n",
++					 attempt, reset_delay_ms, log);
++			break;
++		}
++		dev_warn(dev, "panel came up wrong (attempt %u, reset delay %u ms): %s\n",
++			 attempt, reset_delay_ms, log);
++		if (attempt > max_retries)
++			break;
 +	}
 +
 +	return 0;
 +}
 +
 +/*
-+ * There is no disable/unprepare: once this panel has been sent display off
-+ * and sleep in, neither a reset nor the init sequence brings it back (it
-+ * stops answering on the DSI link). It stays awake with the backlight off
-+ * and gets reset and initialised again on the next prepare.
++ * No unprepare: the supplies stay on and the panel is reset and initialised
++ * again on the next prepare.
++ *
++ * Without disable the panel stays awake and its video stream is just cut
++ * off. It then came up with snow and stripes after every other reset (the
++ * SoC side registers identical either way), screen rotation included. The
++ * stock kernel sends display off and sleep in (high speed, while the video
++ * still runs) before it resets the panel; so does this driver: 14 of 14
++ * screen on cycles and rotations came up clean, against every other one
++ * without. An earlier attempt at sleep in had left a panel that never
++ * answered again, found while the reset delay was still the 10 ms that is
++ * too short.
 + */
++static bool sleep_on_disable = true;
++module_param(sleep_on_disable, bool, 0644);
++MODULE_PARM_DESC(sleep_on_disable, "Send display off and sleep in when the panel is disabled, like the stock kernel");
++
++static int jdi_nt35596s_disable(struct drm_panel *panel)
++{
++	struct jdi_nt35596s *ctx = to_jdi_nt35596s(panel);
++	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
++
++	if (!sleep_on_disable)
++		return 0;
++
++	ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
++	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
++	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
++	mipi_dsi_msleep(&dsi_ctx, 70);
++	if (dsi_ctx.accum_err)
++		dev_warn(&ctx->dsi->dev, "Failed to put the panel to sleep: %d\n",
++			 dsi_ctx.accum_err);
++	else if (verbose)
++		dev_info(&ctx->dsi->dev, "panel asleep\n");
++
++	return 0;
++}
 +
 +/*
 + * Timings as the bootloader programs the DSI controller (read back from its
@@ -401,6 +563,7 @@ then fixed up on the device:
 +
 +static const struct drm_panel_funcs jdi_nt35596s_panel_funcs = {
 +	.prepare = jdi_nt35596s_prepare,
++	.disable = jdi_nt35596s_disable,
 +	.get_modes = jdi_nt35596s_get_modes,
 +};
 +

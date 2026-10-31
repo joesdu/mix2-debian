@@ -21,7 +21,8 @@ cp /etc/resolv.conf "$ROOT/etc/resolv.conf"
 in_root apt-get update
 in_root apt-get install -y --no-install-recommends at-spi2-core \
 	xfce4-notifyd gnome-themes-extra elementary-xfce-icon-theme \
-	dosfstools xinput xserver-xorg-video-fbdev libglib2.0-bin dconf-cli libnotify-bin
+	dosfstools xinput xserver-xorg-video-fbdev libglib2.0-bin dconf-cli libnotify-bin \
+	python3-evdev vlc lvm2 thin-provisioning-tools
 in_root apt-get clean
 
 # --- identity
@@ -73,6 +74,11 @@ cat > "$XFCONF/xsettings.xml" <<'EOF'
   <property name="Net" type="empty">
     <property name="ThemeName" type="string" value="Adwaita"/>
     <property name="IconThemeName" type="string" value="elementary-xfce"/>
+    <!-- Finger taps: two taps land a few pixels apart on this ~400 dpi
+         panel, more than the default 5 px, and a tap moves a little -->
+    <property name="DoubleClickDistance" type="int" value="64"/>
+    <property name="DoubleClickTime" type="int" value="500"/>
+    <property name="DndDragThreshold" type="int" value="24"/>
   </property>
   <property name="Xft" type="empty">
     <property name="DPI" type="int" value="180"/>
@@ -183,7 +189,9 @@ EOF
 # --- Qualcomm remote processor daemons
 # rmtfs serves the modem's EFS partitions (modemst1/modemst2/fsg) like Android's rmt_storage
 in_root systemctl enable mix2-usb-gadget.service mix2-usb-dhcp.service mix2-growfs.service \
-	mix2-power-key.service ssh.service NetworkManager.service lightdm.service zramswap.service
+	mix2-power-key.service mix2-usb-auto.service mix2-audio.service ssh.service \
+	mix2-touch-longpress.service mix2-lvm-udev.service \
+	NetworkManager.service lightdm.service zramswap.service
 for s in rmtfs tqftpserv pd-mapper; do in_root systemctl enable "$s.service" || true; done
 # The QRTR name service lives in the kernel since 5.7; the userspace one only conflicts
 in_root systemctl disable qrtr-ns.service || true

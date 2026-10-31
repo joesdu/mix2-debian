@@ -1,0 +1,263 @@
+#!/usr/bin/python3
+"""Touchscreen taps as mouse clicks, long press as right click.
+
+X11 (libinput) has no long press for touchscreens, so on the touchscreen alone
+there was no way to open a context menu. This daemon grabs the touchscreen and
+replays its events on a virtual copy ("mix2 touchscreen") that X uses instead:
+
+- drags, scrolling and two-finger gestures pass through unchanged (a finger
+  that has not moved yet is held back until it moves or a second finger
+  comes; then everything held back is replayed at once)
+- a single finger that lifts without moving (a tap) becomes a left click of
+  a virtual absolute pointer at that spot: GTK 3 makes no double clicks out
+  of touch taps, so files and desktop icons could not be opened
+- a single finger that stays put for LONG_PRESS seconds becomes a right
+  click there instead, so the context menu opens like with a mouse
+
+The spot is turned with the screen (the orientation mix2-rotate saved). If
+this daemon dies, the grab dies with it and the touchscreen works directly
+again.
+"""
+import glob
+import os
+import select
+import subprocess
+import sys
+import time
+
+import evdev
+from evdev import AbsInfo, UInput
+from evdev import ecodes as e
+
+TOUCH_NAME = "Synaptics S3330"
+LONG_PRESS = 0.55       # seconds without moving
+MOVE = 32               # touch units (= pixels on this panel, ~2 mm)
+TAP_GAP = 0.004         # seconds between replayed frames
+PTR_MAX = 65535
+
+
+def find_touchscreen():
+    for _ in range(60):
+        for path in evdev.list_devices():
+            dev = evdev.InputDevice(path)
+            if dev.name == TOUCH_NAME:
+                return dev
+            dev.close()
+        time.sleep(1)
+    sys.exit("no %s touchscreen" % TOUCH_NAME)
+
+
+def desktop_user():
+    out = subprocess.run(["loginctl", "list-sessions", "--no-legend"],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] not in ("root", "lightdm"):
+            return fields[2]
+    return None
+
+
+def map_touch_later():
+    """Once X has picked up the virtual touchscreen, map it to the screen."""
+    user = desktop_user()
+    if not user:
+        return  # no session yet: mix2-rotate restore at login maps it
+    home = os.path.expanduser("~" + user)
+    subprocess.Popen(["sh", "-c", "sleep 2; exec runuser -u \"$0\" -- env DISPLAY=:0 "
+                      "XAUTHORITY=\"$1\"/.Xauthority /usr/local/bin/mix2-rotate map",
+                      user, home], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def rotation():
+    files = glob.glob("/home/*/.config/mix2-rotation")
+    if not files:
+        return "normal"
+    try:
+        with open(max(files, key=os.path.getmtime)) as f:
+            return f.read().strip() or "normal"
+    except OSError:
+        return "normal"
+
+
+def to_screen(nx, ny):
+    """Same transformation as xinput map-to-output for each orientation."""
+    r = rotation()
+    if r == "right":
+        return ny, 1 - nx
+    if r == "left":
+        return 1 - ny, nx
+    if r == "inverted":
+        return 1 - nx, 1 - ny
+    return nx, ny
+
+
+class LongPress:
+    IDLE, PENDING, PASS, SWALLOW = range(4)
+
+    def __init__(self, dev):
+        self.dev = dev
+        caps = dev.capabilities(absinfo=True)
+        self.ax = dict(caps[e.EV_ABS])
+        self.touch = UInput.from_device(dev, name="mix2 touchscreen",
+                                        input_props=dev.input_props())
+        self.ptr = UInput({e.EV_KEY: [e.BTN_LEFT, e.BTN_RIGHT, e.BTN_MIDDLE],
+                           e.EV_ABS: [(e.ABS_X, AbsInfo(0, 0, PTR_MAX, 0, 0, 0)),
+                                      (e.ABS_Y, AbsInfo(0, 0, PTR_MAX, 0, 0, 0))]},
+                          name="mix2 touch clicks")
+        self.state = self.IDLE
+        self.held = []
+        self.deadline = None
+        self.start = None
+        # What the real device reports, per slot: tracking id, x, y
+        self.slot = 0
+        self.slots = {}
+        self.st = [0, 0]
+        self.down = False
+
+    def norm(self, x, y):
+        ix, iy = self.ax[e.ABS_MT_POSITION_X], self.ax[e.ABS_MT_POSITION_Y]
+        return ((x - ix.min) / max(1, ix.max - ix.min),
+                (y - iy.min) / max(1, iy.max - iy.min))
+
+    def track(self, frame):
+        for ev in frame:
+            if ev.type == e.EV_ABS:
+                if ev.code == e.ABS_MT_SLOT:
+                    self.slot = ev.value
+                elif ev.code == e.ABS_MT_TRACKING_ID:
+                    s = self.slots.setdefault(self.slot, [-1, 0, 0])
+                    s[0] = ev.value
+                elif ev.code == e.ABS_MT_POSITION_X:
+                    self.slots.setdefault(self.slot, [-1, 0, 0])[1] = ev.value
+                elif ev.code == e.ABS_MT_POSITION_Y:
+                    self.slots.setdefault(self.slot, [-1, 0, 0])[2] = ev.value
+                elif ev.code == e.ABS_X:
+                    self.st[0] = ev.value
+                elif ev.code == e.ABS_Y:
+                    self.st[1] = ev.value
+            elif ev.type == e.EV_KEY and ev.code == e.BTN_TOUCH:
+                self.down = bool(ev.value)
+
+    def complete(self, frame, slot):
+        """The virtual device only saw part of the touches, and the kernel
+        drops values that did not change: repeat a new touch's position.
+        slot is the slot the device was in when the frame started."""
+        out = []
+        for ev in frame:
+            out.append((ev.type, ev.code, ev.value))
+            if ev.type == e.EV_ABS and ev.code == e.ABS_MT_SLOT:
+                slot = ev.value
+            if ev.type == e.EV_ABS and ev.code == e.ABS_MT_TRACKING_ID and ev.value >= 0:
+                s = self.slots.get(slot, [-1, 0, 0])
+                out.append((e.EV_ABS, e.ABS_MT_POSITION_X, s[1]))
+                out.append((e.EV_ABS, e.ABS_MT_POSITION_Y, s[2]))
+            if ev.type == e.EV_KEY and ev.code == e.BTN_TOUCH and ev.value:
+                out.append((e.EV_ABS, e.ABS_X, self.st[0]))
+                out.append((e.EV_ABS, e.ABS_Y, self.st[1]))
+        return out
+
+    def active(self):
+        return [s for s in self.slots.values() if s[0] >= 0]
+
+    def send(self, frame):
+        for t, c, v in frame:
+            self.touch.write(t, c, v)
+        self.touch.syn()
+
+    def flush(self):
+        for i, f in enumerate(self.held):
+            if i:
+                time.sleep(TAP_GAP)
+            self.send(f)
+        self.held = []
+
+    def click(self, button):
+        x, y = self.start
+        sx, sy = to_screen(*self.norm(x, y))
+        px = min(PTR_MAX, max(0, round(sx * PTR_MAX)))
+        py = min(PTR_MAX, max(0, round(sy * PTR_MAX)))
+        # Nudge first: the kernel drops a position equal to the last one
+        self.ptr.write(e.EV_ABS, e.ABS_X, px + 1 if px < PTR_MAX else px - 1)
+        self.ptr.write(e.EV_ABS, e.ABS_Y, py)
+        self.ptr.syn()
+        self.ptr.write(e.EV_ABS, e.ABS_X, px)
+        self.ptr.syn()
+        time.sleep(0.01)
+        self.ptr.write(e.EV_KEY, button, 1)
+        self.ptr.syn()
+        time.sleep(0.02)
+        self.ptr.write(e.EV_KEY, button, 0)
+        self.ptr.syn()
+
+    def frame(self, raw):
+        slot = self.slot
+        self.track(raw)
+        frame = self.complete(raw, slot)
+        fingers = self.active()
+        touching = self.down or bool(fingers)
+
+        if self.state == self.IDLE:
+            if not touching:
+                self.send(frame)
+                return
+            self.state = self.PENDING
+            self.held = [frame]
+            f = fingers[0] if fingers else [0, self.st[0], self.st[1]]
+            self.start = (f[1], f[2])
+            self.deadline = time.monotonic() + LONG_PRESS
+            return
+        if self.state == self.PENDING:
+            self.held.append(frame)
+            if not touching:
+                # A tap: one finger that never moved
+                self.held = []
+                self.state = self.IDLE
+                self.click(e.BTN_LEFT)
+            elif len(fingers) > 1 or (fingers and (
+                    abs(fingers[0][1] - self.start[0]) > MOVE or
+                    abs(fingers[0][2] - self.start[1]) > MOVE)):
+                self.flush()
+                self.state = self.PASS
+            return
+        if self.state == self.PASS:
+            self.send(frame)
+            if not touching:
+                self.state = self.IDLE
+            return
+        if self.state == self.SWALLOW and not touching:
+            self.state = self.IDLE
+
+    def timeout(self):
+        if self.state == self.PENDING and time.monotonic() >= self.deadline:
+            self.held = []
+            self.state = self.SWALLOW
+            self.click(e.BTN_RIGHT)
+
+    def run(self):
+        self.dev.grab()
+        map_touch_later()
+        raw = []
+        while True:
+            wait = None
+            if self.state == self.PENDING:
+                wait = max(0.0, self.deadline - time.monotonic())
+            r, _, _ = select.select([self.dev.fd], [], [], wait)
+            if not r:
+                self.timeout()
+                continue
+            for ev in self.dev.read():
+                if ev.type == e.EV_SYN:
+                    if ev.code == e.SYN_REPORT:
+                        self.frame(raw)
+                    raw = []  # SYN_DROPPED: the partial frame is lost
+                else:
+                    raw.append(ev)
+            self.timeout()
+
+
+def main():
+    LongPress(find_touchscreen()).run()
+
+
+if __name__ == "__main__":
+    main()

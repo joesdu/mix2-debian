@@ -1,0 +1,23 @@
+#!/bin/sh
+# Default mixer routing of the phone's sound card, applied when it appears
+# (90-mix2-audio.rules starts mix2-audio-init.service after alsa-restore):
+#   playback  MultiMedia1 -> QUAT MI2S -> TAS2559/TAS2560 speaker
+#   capture   main mic AMIC3 -> ADC3 -> DEC7 -> SLIM TX7 -> SLIMBUS_0_TX -> MultiMedia2
+# then the software volume controls (mix2-volume init).
+CARD=chironwcd9335
+
+c() { amixer -q -c "$CARD" cset name="$1" "$2" || echo "cannot set '$1' to $2"; }
+
+c 'QUAT_MI2S_RX Audio Mixer MultiMedia1' on
+c 'TAS2559 Output' Speaker
+
+c 'AMIC MUX7' ADC3
+c 'ADC MUX7' AMIC
+c 'SLIM TX7 MUX' DEC7
+c 'ADC3 Volume' 20
+c 'AIF1_CAP Mixer SLIM TX7' on
+c 'AIF1_CAP Mixer SLIM TX8' off
+c 'MultiMedia2 Mixer SLIMBUS_0_TX' on
+c 'MultiMedia1 Mixer SLIMBUS_0_TX' off
+
+exec /usr/local/bin/mix2-volume init

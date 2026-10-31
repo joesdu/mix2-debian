@@ -1,0 +1,20 @@
+[Unit]
+Description=Let udev set up the LVM volumes the initramfs activated
+# The initramfs activates mix2/* without udev; udev then ignores those
+# device-mapper devices (no /dev/disk/by-label links, no systemd device
+# units: a separate /home volume once never mounted). A refresh sends proper
+# udev events.
+DefaultDependencies=no
+After=systemd-udevd.service systemd-udev-trigger.service
+Wants=systemd-udev-trigger.service
+Before=local-fs-pre.target
+ConditionPathExists=/dev/mix2/root
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/vgchange --refresh mix2
+ExecStartPost=/usr/bin/udevadm settle --timeout=10
+
+[Install]
+WantedBy=sysinit.target

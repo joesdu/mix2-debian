@@ -11,9 +11,20 @@ Register as a DRM panel follower when the node has a "panel" phandle,
 wait for the panel at probe, and power cycle the sensor (which pulses its
 reset line) after each panel prepare. It is left running while the panel
 is off.
+
+When to restart it is panel_follow_mode: 1 (default) restarts it
+panel_follow_delay_ms (100) after the panel was enabled, 0 right after the
+panel was prepared, 2 pulses its reset right before the panel is prepared
+(panel_preparing follower callback) and lets it start up while the panel is
+initialised, like the stock driver. panel_follow_soft_reset adds the stock
+F01 soft reset after enable to mode 2.
+
+The touch position is right with each mode. Snow and stripes on every other
+screen on, which looked like a touch timing problem at first, came from the
+panel not being put to sleep before it was reset (see the panel driver).
 ---
---- a/drivers/input/rmi4/rmi_i2c.c	2026-10-25 17:33:55.855263758 +0800
-+++ b/drivers/input/rmi4/rmi_i2c.c	2026-10-25 17:33:55.857493598 +0800
+--- a/drivers/input/rmi4/rmi_i2c.c
++++ b/drivers/input/rmi4/rmi_i2c.c
 @@ -9,6 +9,7 @@
  #include <linux/of.h>
  #include <linux/delay.h>
@@ -33,49 +44,159 @@ is off.
   */
  struct rmi_i2c_xport {
  	struct rmi_transport_dev xport;
-@@ -40,6 +45,10 @@
+@@ -40,8 +45,33 @@
  
  	struct regulator_bulk_data supplies[2];
  	u32 startup_delay;
 +
 +	struct drm_panel_follower panel_follower;
-+	struct work_struct panel_follower_work;
++	struct delayed_work panel_follower_work;
++	struct work_struct panel_boot_work;
 +	bool powered;
  };
  
++/*
++ * When to restart the controller of an in-cell touchscreen: 1 (default) once
++ * the panel shows a picture again, 0 right after it was prepared, 2 together
++ * with the panel by pulsing its reset just before it is prepared, like the
++ * stock Xiaomi driver. The touch position is right with each of them. (Snow
++ * and stripes on every other screen on, which looked related at first, came
++ * from the panel not being put to sleep before its reset.)
++ */
++static unsigned int panel_follow_mode = 1;
++module_param(panel_follow_mode, uint, 0644);
++MODULE_PARM_DESC(panel_follow_mode, "Restart an in-cell controller 0: after the panel is prepared, 1: panel_follow_delay_ms after it is enabled, 2: together with the panel (reset just before it is prepared)");
++
++static unsigned int panel_follow_delay_ms = 100;
++module_param(panel_follow_delay_ms, uint, 0644);
++MODULE_PARM_DESC(panel_follow_delay_ms, "Delay after the panel is enabled for mode 1 and for the soft reset (ms)");
++
++static bool panel_follow_soft_reset;
++module_param(panel_follow_soft_reset, bool, 0644);
++MODULE_PARM_DESC(panel_follow_soft_reset, "Mode 2: also soft reset the controller panel_follow_delay_ms after the panel is enabled, like the stock FB_READY_RESET");
++
  #define RMI_PAGE_SELECT_REGISTER 0xff
-@@ -198,6 +207,85 @@
+ #define RMI_I2C_PAGE(addr) (((addr) >> 8) & 0xff)
+ 
+@@ -198,6 +228,179 @@
  	rmi_unregister_transport_device(&rmi_i2c->xport);
  }
  
 +static int rmi_i2c_runtime_suspend(struct device *dev);
 +static int rmi_i2c_runtime_resume(struct device *dev);
 +
++/* Ask F01 for a device reset; its reset handling then reconfigures it */
++static int rmi_i2c_soft_reset(struct rmi_i2c_xport *rmi_i2c)
++{
++	struct rmi_device *rmi_dev = rmi_i2c->xport.rmi_dev;
++	struct rmi_driver_data *data = dev_get_drvdata(&rmi_dev->dev);
++	u8 cmd = 0x01;	/* F01 device reset command */
++
++	if (!data || !data->f01_container)
++		return -ENODEV;
++
++	return rmi_write_block(rmi_dev,
++			       data->f01_container->fd.command_base_addr,
++			       &cmd, 1);
++}
++
 +/*
 + * The controller of an in-cell touchscreen loses its state whenever the
-+ * panel is reset and initialised, and it only scans properly when it starts
-+ * after the display. Power cycle it, which also pulses its reset line, each
-+ * time the panel has been prepared; the F01 reset handling then reconfigures
-+ * it.
++ * panel is reset and initialised. Modes 0 and 1 power cycle it, which also
++ * pulses its reset line, after the panel is up again; mode 2 only does the
++ * optional soft reset here. The F01 reset handling then reconfigures it.
 + */
 +static void rmi_i2c_panel_follower_work(struct work_struct *work)
 +{
 +	struct rmi_i2c_xport *rmi_i2c =
-+		container_of(work, struct rmi_i2c_xport, panel_follower_work);
++		container_of(to_delayed_work(work), struct rmi_i2c_xport,
++			     panel_follower_work);
 +	struct device *dev = &rmi_i2c->client->dev;
++	int error;
++
++	if (panel_follow_mode == 2) {
++		flush_work(&rmi_i2c->panel_boot_work);
++		if (rmi_i2c->powered) {
++			error = rmi_i2c_soft_reset(rmi_i2c);
++			if (error)
++				dev_warn(dev, "Soft reset failed: %d\n", error);
++		}
++		return;
++	}
 +
 +	if (rmi_i2c->powered)
 +		rmi_i2c_runtime_suspend(dev);
 +	rmi_i2c->powered = !rmi_i2c_runtime_resume(dev);
 +}
 +
++/* Mode 2: the controller comes out of reset while the panel is initialised */
++static void rmi_i2c_panel_boot_work(struct work_struct *work)
++{
++	struct rmi_i2c_xport *rmi_i2c =
++		container_of(work, struct rmi_i2c_xport, panel_boot_work);
++
++	if (!rmi_i2c->powered)
++		rmi_i2c->powered =
++			!rmi_i2c_runtime_resume(&rmi_i2c->client->dev);
++}
++
++/*
++ * Mode 2, like the stock driver on unblank: hold the controller in reset for
++ * 5 ms right before the panel is reset and initialised, then let it start up
++ * (the supply wait covers its boot time) while that happens.
++ */
++static int rmi_i2c_panel_preparing(struct drm_panel_follower *follower)
++{
++	struct rmi_i2c_xport *rmi_i2c =
++		container_of(follower, struct rmi_i2c_xport, panel_follower);
++
++	if (panel_follow_mode != 2)
++		return 0;
++
++	cancel_delayed_work_sync(&rmi_i2c->panel_follower_work);
++	flush_work(&rmi_i2c->panel_boot_work);
++
++	if (rmi_i2c->powered) {
++		rmi_i2c_runtime_suspend(&rmi_i2c->client->dev);
++		rmi_i2c->powered = false;
++	}
++	usleep_range(5000, 6000);
++	schedule_work(&rmi_i2c->panel_boot_work);
++
++	return 0;
++}
++
++/* Starting the sensor is slow, don't hold up the panel */
 +static int rmi_i2c_panel_prepared(struct drm_panel_follower *follower)
 +{
 +	struct rmi_i2c_xport *rmi_i2c =
 +		container_of(follower, struct rmi_i2c_xport, panel_follower);
 +
-+	/* Starting the sensor is slow, don't hold up the panel */
-+	schedule_work(&rmi_i2c->panel_follower_work);
++	if (panel_follow_mode == 0)
++		schedule_delayed_work(&rmi_i2c->panel_follower_work, 0);
++
++	return 0;
++}
++
++static int rmi_i2c_panel_enabled(struct drm_panel_follower *follower)
++{
++	struct rmi_i2c_xport *rmi_i2c =
++		container_of(follower, struct rmi_i2c_xport, panel_follower);
++
++	if (panel_follow_mode == 1 ||
++	    (panel_follow_mode == 2 && panel_follow_soft_reset))
++		schedule_delayed_work(&rmi_i2c->panel_follower_work,
++				      msecs_to_jiffies(panel_follow_delay_ms));
++
++	return 0;
++}
++
++static int rmi_i2c_panel_disabling(struct drm_panel_follower *follower)
++{
++	struct rmi_i2c_xport *rmi_i2c =
++		container_of(follower, struct rmi_i2c_xport, panel_follower);
++
++	cancel_delayed_work_sync(&rmi_i2c->panel_follower_work);
 +
 +	return 0;
 +}
@@ -89,13 +210,17 @@ is off.
 +	struct rmi_i2c_xport *rmi_i2c =
 +		container_of(follower, struct rmi_i2c_xport, panel_follower);
 +
-+	cancel_work_sync(&rmi_i2c->panel_follower_work);
++	cancel_delayed_work_sync(&rmi_i2c->panel_follower_work);
++	flush_work(&rmi_i2c->panel_boot_work);
 +
 +	return 0;
 +}
 +
 +static const struct drm_panel_follower_funcs rmi_i2c_panel_follower_funcs = {
++	.panel_preparing = rmi_i2c_panel_preparing,
 +	.panel_prepared = rmi_i2c_panel_prepared,
++	.panel_enabled = rmi_i2c_panel_enabled,
++	.panel_disabling = rmi_i2c_panel_disabling,
 +	.panel_unpreparing = rmi_i2c_panel_unpreparing,
 +};
 +
@@ -103,7 +228,8 @@ is off.
 +{
 +	struct rmi_i2c_xport *rmi_i2c = data;
 +
-+	cancel_work_sync(&rmi_i2c->panel_follower_work);
++	cancel_delayed_work_sync(&rmi_i2c->panel_follower_work);
++	flush_work(&rmi_i2c->panel_boot_work);
 +	/* Balance the regulator disable done on removal */
 +	if (!rmi_i2c->powered)
 +		regulator_bulk_enable(ARRAY_SIZE(rmi_i2c->supplies),
@@ -116,7 +242,9 @@ is off.
 +	int error;
 +
 +	rmi_i2c->powered = true;
-+	INIT_WORK(&rmi_i2c->panel_follower_work, rmi_i2c_panel_follower_work);
++	INIT_DELAYED_WORK(&rmi_i2c->panel_follower_work,
++			  rmi_i2c_panel_follower_work);
++	INIT_WORK(&rmi_i2c->panel_boot_work, rmi_i2c_panel_boot_work);
 +	error = devm_add_action_or_reset(dev, rmi_i2c_panel_follower_cleanup,
 +					 rmi_i2c);
 +	if (error)
@@ -130,7 +258,7 @@ is off.
  static int rmi_i2c_probe(struct i2c_client *client)
  {
  	struct rmi_device_platform_data *pdata;
-@@ -221,6 +309,19 @@
+@@ -221,6 +424,19 @@
  	rmi_dbg(RMI_DEBUG_XPORT, &client->dev, "Probing %s.\n",
  			dev_name(&client->dev));
  
@@ -150,7 +278,7 @@ is off.
  	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
  		dev_err(&client->dev,
  			"adapter does not support required functionality\n");
-@@ -284,6 +385,13 @@
+@@ -284,6 +500,13 @@
  	if (error)
  		return error;
  

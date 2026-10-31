@@ -1,0 +1,136 @@
+#!/bin/bash
+# Snapshots of the whole system (LVM thin volume mix2/root, /home included:
+# a rollback takes personal files back as well).
+#
+#   mix2-snapshot create [description]   take a snapshot now
+#   mix2-snapshot list [--tsv]           list snapshots (oldest first)
+#   mix2-snapshot rollback NAME          return the system to NAME at the next boot
+#   mix2-snapshot delete NAME            remove a snapshot
+#   mix2-snapshot auto                   apt hook: snapshot before dpkg runs,
+#                                        keep the last $KEEP_AUTO automatic ones
+#   mix2-snapshot status                 volumes and pool usage
+#   mix2-snapshot usage                  pool data and metadata use in %
+#
+# Snapshot descriptions live in LVM tags, not on the volume that gets rolled
+# back. A rollback merges the snapshot into root when the volume group is
+# activated next (initramfs), so it takes effect after a reboot; the
+# snapshot itself is used up by that.
+set -euo pipefail
+
+VG=mix2
+ORIGIN=root
+TAG=mix2snap
+KEEP_AUTO=5
+AUTO_GAP=600	# seconds: one automatic snapshot per apt run
+
+die() { echo "mix2-snapshot: $*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "needs root"
+lvm_ok() { lvs "$VG/$ORIGIN" > /dev/null 2>&1; }
+
+# Tags allow [A-Za-z0-9_+.-/=!:&#]: keep descriptions as hex
+enc() { printf '%s' "$1" | od -An -tx1 | tr -d ' \n'; }
+dec() { printf '%s' "$1" | sed 's/../\\x&/g' | xargs -0 printf '%b' 2>/dev/null || true; }
+
+snapshots() {	# name kind time desc_hex merging, oldest first
+	lvs --noheadings --separator '|' -o lv_name,lv_tags,lv_time,lv_merging \
+		--sort lv_time --select "tags=$TAG" "$VG" 2>/dev/null |
+	while IFS='|' read -r name tags time merging; do
+		name=$(echo $name)
+		kind=manual; desc=
+		IFS=, read -ra ts <<< "$tags"
+		for t in "${ts[@]}"; do
+			case "$t" in
+				kind:*) kind=${t#kind:} ;;
+				d:*) desc=${t#d:} ;;
+			esac
+		done
+		echo "$name|$kind|$time|$desc|$(echo $merging)"
+	done
+}
+
+create() {	# kind description
+	local name="$ORIGIN-$(date +%Y%m%d-%H%M%S)"
+	local args=(--addtag "$TAG" --addtag "kind:$1")
+	[ -n "$2" ] && args+=(--addtag "d:$(enc "${2:0:100}")")
+	sync
+	# Snapshots count with their full virtual size: lvm always warns that the
+	# thin volumes add up to more than the pool, which is expected here
+	if ! err=$(lvcreate -q -s -n "$name" "${args[@]}" "$VG/$ORIGIN" 2>&1 > /dev/null); then
+		echo "$err" >&2
+		exit 1
+	fi
+	printf '%s\n' "$err" | grep -v -e "Sum of all thin volume sizes" -e "turned on protection against thin pools" \
+		-e "thin_pool_autoextend_threshold" -e '^$' >&2 || true
+	echo "$name"
+}
+
+warn_pool() {
+	local pool use
+	pool=$(lvs --noheadings -o pool_lv "$VG/$ORIGIN" | tr -d ' ')
+	use=$(lvs --noheadings -o data_percent "$VG/$pool" | tr -d ' ')
+	if [ "${use%%.*}" -ge 85 ]; then
+		echo "mix2-snapshot: warning: storage pool $use% full, delete old snapshots" >&2
+	fi
+}
+
+cmd=${1:-list}
+shift || true
+case "$cmd" in
+	create)
+		lvm_ok || die "the system is not on LVM ($VG/$ORIGIN)"
+		create manual "${*:-}"
+		warn_pool
+		;;
+	auto)
+		lvm_ok || exit 0
+		last=$(snapshots | awk -F'|' '$2 == "auto" { t = $3 } END { print t }')
+		if [ -n "$last" ] && [ $(( $(date +%s) - $(date -d "$last" +%s) )) -lt $AUTO_GAP ]; then
+			exit 0
+		fi
+		name=$(create auto "apt $(date '+%Y-%m-%d %H:%M')")
+		echo "mix2-snapshot: system snapshot $name taken before the package changes"
+		# Keep the newest automatic ones
+		snapshots | awk -F'|' '$2 == "auto" { print $1 }' | head -n -$KEEP_AUTO |
+			while read -r old; do lvremove -q -y "$VG/$old" > /dev/null; done
+		warn_pool
+		;;
+	list)
+		lvm_ok || die "the system is not on LVM ($VG/$ORIGIN)"
+		if [ "${1:-}" = --tsv ]; then
+			snapshots | while IFS='|' read -r n k t d m; do
+				printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$k" "$t" "$(dec "$d")" "$m"
+			done
+		else
+			printf '%-22s %-7s %-20s %-9s %s\n' NAME KIND TIME ROLLBACK DESCRIPTION
+			snapshots | while IFS='|' read -r n k t d m; do
+				[ -n "$m" ] && m=pending || m=-
+				printf '%-22s %-7s %-20s %-9s %s\n' "$n" "$k" "${t:0:19}" "$m" "$(dec "$d")"
+			done
+		fi
+		;;
+	rollback)
+		[ -n "${1:-}" ] || die "usage: mix2-snapshot rollback NAME"
+		snapshots | cut -d'|' -f1 | grep -qx "$1" || die "no snapshot $1"
+		lvconvert -q --merge "$VG/$1"
+		echo "Everything, /home included, returns to $1 at the next boot."
+		;;
+	delete)
+		[ -n "${1:-}" ] || die "usage: mix2-snapshot delete NAME"
+		snapshots | cut -d'|' -f1 | grep -qx "$1" || die "no snapshot $1"
+		lvremove -q -y "$VG/$1" > /dev/null
+		;;
+	status)
+		lvm_ok || die "the system is not on LVM ($VG/$ORIGIN)"
+		lvs -o lv_name,lv_size,data_percent,metadata_percent "$VG"
+		;;
+	usage)
+		lvm_ok || die "the system is not on LVM ($VG/$ORIGIN)"
+		pool=$(lvs --noheadings -o pool_lv "$VG/$ORIGIN" | tr -d ' ')
+		lvs --noheadings -o data_percent,metadata_percent "$VG/$pool" | awk '{ print $1, $2 }'
+		;;
+	*)
+		sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+		exit 1
+		;;
+esac

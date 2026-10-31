@@ -1,0 +1,12 @@
+[Unit]
+Description=Start the ADSP and the speaker amplifier driver
+After=local-fs.target pd-mapper.service
+Wants=pd-mapper.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/mix2-audio-start
+
+[Install]
+WantedBy=multi-user.target

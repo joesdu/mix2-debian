@@ -27,11 +27,12 @@
 #include <linux/pm.h>
 #include <linux/i2c.h>
 #include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <linux/firmware.h>
 #include <linux/regmap.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/legacy.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/crc8.h>
@@ -3157,32 +3158,48 @@ int tas2559_get_Cali_prm_r0(struct tas2559_priv *pTAS2559,
 	return -ENOENT;
 }
 
+static int tas2559_get_legacy_gpio(struct device *dev, const char *name)
+{
+	struct gpio_desc *desc;
+
+	desc = fwnode_gpiod_get_index(of_fwnode_handle(dev->of_node), name, 0,
+					 GPIOD_ASIS, name);
+	if (IS_ERR(desc))
+		return PTR_ERR(desc);
+
+	{
+		int gpio = desc_to_gpio(desc);
+		gpiod_put(desc);
+		return gpio;
+	}
+}
+
 int tas2559_parse_dt(struct device *dev, struct tas2559_priv *pTAS2559)
 {
 	struct device_node *np = dev->of_node;
 	int rc = 0, ret = 0;
 	unsigned int value;
 
-	pTAS2559->mnDevAGPIORST = of_get_named_gpio(np, "ti,tas2559-reset-gpio", 0);
+	pTAS2559->mnDevAGPIORST = tas2559_get_legacy_gpio(dev, "ti,tas2559-reset");
 	if (!gpio_is_valid(pTAS2559->mnDevAGPIORST))
 		dev_err(pTAS2559->dev, "Looking up %s property in node %s failed %d\n",
 			"ti,tas2559-reset-gpio", np->full_name, pTAS2559->mnDevAGPIORST);
 	else
 		dev_dbg(pTAS2559->dev, "%s, tas2559 reset gpio %d\n", __func__, pTAS2559->mnDevAGPIORST);
 
-	pTAS2559->mnDevBGPIORST = of_get_named_gpio(np, "ti,tas2560-reset-gpio", 0);
+	pTAS2559->mnDevBGPIORST = tas2559_get_legacy_gpio(dev, "ti,tas2560-reset");
 	if (!gpio_is_valid(pTAS2559->mnDevBGPIORST))
 		dev_err(pTAS2559->dev, "Looking up %s property in node %s failed %d\n",
 			"ti,tas2560-reset-gpio", np->full_name, pTAS2559->mnDevBGPIORST);
 	else
 		dev_dbg(pTAS2559->dev, "%s, tas2560 reset gpio %d\n", __func__, pTAS2559->mnDevBGPIORST);
 
-	pTAS2559->mnDevAGPIOIRQ = of_get_named_gpio(np, "ti,tas2559-irq-gpio", 0);
+	pTAS2559->mnDevAGPIOIRQ = tas2559_get_legacy_gpio(dev, "ti,tas2559-irq");
 	if (!gpio_is_valid(pTAS2559->mnDevAGPIOIRQ))
 		dev_err(pTAS2559->dev, "Looking up %s property in node %s failed %d\n",
 			"ti,tas2559-irq-gpio", np->full_name, pTAS2559->mnDevAGPIOIRQ);
 
-	pTAS2559->mnDevBGPIOIRQ = of_get_named_gpio(np, "ti,tas2560-irq-gpio", 0);
+	pTAS2559->mnDevBGPIOIRQ = tas2559_get_legacy_gpio(dev, "ti,tas2560-irq");
 	if (!gpio_is_valid(pTAS2559->mnDevBGPIOIRQ))
 		dev_err(pTAS2559->dev, "Looking up %s property in node %s failed %d\n",
 			"ti,tas2560-irq-gpio", np->full_name, pTAS2559->mnDevBGPIOIRQ);

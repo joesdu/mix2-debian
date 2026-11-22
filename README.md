@@ -1,6 +1,6 @@
 # 小米 MIX 2（chiron）上的 Debian 13
 
-这台手机已经从 Android 换成了**原生 Debian 13（trixie）**，运行我们自己编译的主线 Linux 6.18.58 内核，不依赖任何 Android 组件。
+这台手机已经从 Android 换成了**原生 Debian 13（trixie）**，运行我们自己编译的主线 Linux 7.3.5 内核，不依赖任何 Android 组件。
 
 📖 **完整的构建、刷机、使用和调试步骤见 [docs/操作手册.md](docs/操作手册.md)。**
 

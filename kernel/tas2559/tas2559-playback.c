@@ -367,7 +367,7 @@ static SOC_ENUM_SINGLE_EXT_DECL(tas_play_output_enum, tas_play_outputs);
 static int tas_play_output_get(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *c = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *c = snd_kcontrol_chip(kcontrol);
 	struct tas2559_priv *t = snd_soc_component_get_drvdata(c);
 
 	ucontrol->value.enumerated.item[0] = tas_play_earpiece(t);
@@ -377,7 +377,7 @@ static int tas_play_output_get(struct snd_kcontrol *kcontrol,
 static int tas_play_output_put(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *c = snd_soc_kcontrol_component(kcontrol);
+	struct snd_soc_component *c = snd_kcontrol_chip(kcontrol);
 	struct tas2559_priv *t = snd_soc_component_get_drvdata(c);
 	struct tas2559_playback *p = t->playback;
 	unsigned int config = ucontrol->value.enumerated.item[0] ? 3 : 4;

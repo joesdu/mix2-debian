@@ -3,7 +3,7 @@
 # Output: ~/mix2/out/{Image.gz,msm8998-xiaomi-chiron.dtb,Image.gz-dtb,modules/}
 set -euo pipefail
 
-SRC=~/mix2/linux-6.18.58
+SRC=~/mix2/linux-7.3.5
 OUT=~/mix2/out
 WIN=/mnt/g/crazymix2
 export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-

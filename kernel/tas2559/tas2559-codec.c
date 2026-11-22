@@ -33,7 +33,7 @@
 #include <linux/firmware.h>
 #include <linux/regmap.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/legacy.h>
 #include <linux/slab.h>
 #include <linux/syscalls.h>
 #include <linux/fcntl.h>
@@ -47,8 +47,6 @@
 
 #include "tas2559-core.h"
 #include "tas2559-codec.h"
-
-#define KCONTROL_CODEC
 
 static unsigned int tas2559_codec_read(struct snd_soc_component *pCodec,
 				       unsigned int nRegister)

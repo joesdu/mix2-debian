@@ -6,7 +6,7 @@ The TI/Xiaomi GPLv2 notices remain in the source files.
 
 ## Verified
 
-- Core, regmap and codec sources compile against Linux 6.18 for arm64.
+- Core, regmap and codec sources compile against Linux 7.3.5 for arm64.
 - ASoC component, I2C remove, hrtimer and firmware-request APIs migrated.
 - Separate I2C clients/regmaps replace mutation of a client's address.
 - Container preflight rejects truncated strings, sections and burst commands.

@@ -6,16 +6,21 @@ set -euo pipefail
 cd /g/crazymix2
 PASS=${MIX2_PASS:-mix2}
 HOST=${MIX2_HOST:-172.16.42.1}
-SCP=(scp -q -i keys/mix2_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+KEY=${MIX2_KEY:-keys/mix2_ed25519}
+SCP=(scp -q -i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+KVER=$(tar -tzf images/dev/modules.tar.gz | awk -F/ 'NF >= 2 && $1 != "" && !found {value=$1; found=1} END {if (!found) exit 1; print value}')
+case "$KVER" in
+	*[!A-Za-z0-9._+-]*|"") echo "cannot determine kernel release from modules.tar.gz" >&2; exit 1;;
+esac
 
 "${SCP[@]}" images/dev/modules.tar.gz images/dev/Image.gz images/dev/msm8998-xiaomi-chiron.dtb \
-	images/dev/initramfs.cpio.gz "mix2@$HOST:/tmp/"
+	images/dev/initramfs.cpio.gz images/dev/kernelrelease "mix2@$HOST:/tmp/"
 scripts/mix2ssh "echo '$PASS' | sudo -S -p '' sh -c '
 	set -e
-	rm -rf /lib/modules/6.18.58-chiron
+	rm -rf /lib/modules/$KVER
 	tar -m -xzf /tmp/modules.tar.gz -C /lib/modules/ 2>/dev/null
-	depmod -a 6.18.58-chiron
-	install -m 644 /tmp/Image.gz /tmp/msm8998-xiaomi-chiron.dtb /tmp/initramfs.cpio.gz /boot/mix2/
+	depmod -a $KVER
+	install -m 644 /tmp/Image.gz /tmp/msm8998-xiaomi-chiron.dtb /tmp/initramfs.cpio.gz /tmp/kernelrelease /boot/mix2/
 	mix2-flash-boot
 '"
 if [ "${1:-}" != --no-reboot ]; then
